@@ -104,12 +104,21 @@ export default function InvoicesList() {
 
   const deleteMutation = useMutation({
     mutationFn: async (invoiceId: string) => {
-      const { error } = await supabase
+      // First, delete all invoice items
+      const { error: itemsError } = await supabase
+        .from('invoice_items')
+        .delete()
+        .eq('invoice_id', invoiceId);
+
+      if (itemsError) throw itemsError;
+
+      // Then, delete the invoice
+      const { error: invoiceError } = await supabase
         .from('invoices')
         .delete()
         .eq('id', invoiceId);
-      
-      if (error) throw error;
+
+      if (invoiceError) throw invoiceError;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
