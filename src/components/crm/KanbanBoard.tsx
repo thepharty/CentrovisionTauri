@@ -71,16 +71,22 @@ export const KanbanBoard = ({ pipelines, procedureFilter, searchQuery, flowCateg
 
   // Filter pipelines
   const filteredPipelines = useMemo(() => {
-    return pipelines.filter((pipeline) => {
+    const filtered = pipelines.filter((pipeline) => {
       // Only show active pipelines (both 'activo' in Spanish and 'active' in English)
-      if (pipeline.status !== 'activo' && pipeline.status !== 'active') return false;
+      if (pipeline.status !== 'activo' && pipeline.status !== 'active') {
+        return false;
+      }
 
       // Flow category filter
       const procedureName = pipeline.procedure_type?.name;
       if (procedureName) {
         const isInSurgeries = isProcedureInSurgeries(procedureName);
-        if (flowCategory === 'surgeries' && !isInSurgeries) return false;
-        if (flowCategory === 'supplies' && isInSurgeries) return false;
+        if (flowCategory === 'surgeries' && !isInSurgeries) {
+          return false;
+        }
+        if (flowCategory === 'supplies' && isInSurgeries) {
+          return false;
+        }
       }
 
       // Procedure filter
@@ -98,6 +104,8 @@ export const KanbanBoard = ({ pipelines, procedureFilter, searchQuery, flowCateg
 
       return true;
     });
+
+    return filtered;
   }, [pipelines, procedureFilter, searchQuery, flowCategory]);
 
   // Group pipelines by stage - with special handling for mixed view

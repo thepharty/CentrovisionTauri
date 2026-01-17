@@ -106,8 +106,8 @@ export function useCRMNotifications() {
       
       const twoDaysAgo = new Date();
       twoDaysAgo.setHours(twoDaysAgo.getHours() - 48);
-      
-      const { data, error } = await supabase
+
+      const { data, error} = await supabase
         .from("crm_activity_log")
         .select(`
           *,
@@ -116,13 +116,13 @@ export function useCRMNotifications() {
             patient:patients(first_name, last_name),
             procedure_type:crm_procedure_types(name, color)
           ),
-          creator:profiles!crm_activity_log_created_by_fkey(full_name)
+          creator:profiles!created_by(full_name)
         `)
         .eq("branch_id", currentBranch.id)
         .gte("created_at", twoDaysAgo.toISOString())
         .order("created_at", { ascending: false })
         .limit(50);
-      
+
       if (error) throw error;
       return (data || []) as unknown as CRMActivity[];
     },

@@ -75,6 +75,9 @@ export const PipelineDetailSheet = ({ pipeline, open, onOpenChange }: PipelineDe
 
   if (!pipeline) return null;
 
+  // Normalize status - accept both 'active' and 'activo'
+  const isActive = pipeline.status === 'active' || pipeline.status === 'activo';
+
   // Map legacy en_camino to ya_clinica for display
   const currentStageNormalized = pipeline.current_stage === 'en_camino' ? 'ya_clinica' : pipeline.current_stage;
   const currentStageIndex = stageOrder.indexOf(currentStageNormalized);
@@ -227,7 +230,7 @@ export const PipelineDetailSheet = ({ pipeline, open, onOpenChange }: PipelineDe
             </div>
 
             {/* Advance Stage Action */}
-            {pipeline.status === 'activo' && currentStageIndex < stageOrder.length - 1 && (
+            {isActive && currentStageIndex < stageOrder.length - 1 && (
               <div className="space-y-3 p-4 rounded-lg border bg-card">
                 <h4 className="font-medium text-sm">Avanzar a siguiente etapa</h4>
                 {stageOrder[currentStageIndex + 1] === 'anticipo' && (
@@ -256,7 +259,7 @@ export const PipelineDetailSheet = ({ pipeline, open, onOpenChange }: PipelineDe
             )}
 
             {/* Complete/Cancel Actions */}
-            {pipeline.status === 'activo' && currentStageIndex === stageOrder.length - 1 && (
+            {isActive && currentStageIndex === stageOrder.length - 1 && (
               <Button 
                 onClick={handleComplete} 
                 className="w-full"
@@ -320,7 +323,7 @@ export const PipelineDetailSheet = ({ pipeline, open, onOpenChange }: PipelineDe
             )}
 
             {/* Cancel Pipeline */}
-            {pipeline.status === 'activo' && (
+            {isActive && (
               <>
                 <Separator />
                 <Button 

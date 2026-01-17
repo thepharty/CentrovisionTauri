@@ -85,8 +85,8 @@ export const useCRMPipelines = (branchId?: string, status?: string) => {
           *,
           patient:patients(id, first_name, last_name, code, phone),
           procedure_type:crm_procedure_types(id, name, color),
-          doctor:profiles!crm_pipelines_doctor_id_fkey(user_id, full_name),
-          branch:branches(id, name)
+          branch:branches(id, name),
+          doctor:profiles!doctor_id(user_id, full_name)
         `)
         .order('created_at', { ascending: false });
 
@@ -168,16 +168,21 @@ export const useCreatePipeline = () => {
   return useMutation({
     mutationFn: async (data: CreatePipelineData) => {
       const { data: { user } } = await supabase.auth.getUser();
-      
+
       // Separate stages from the rest of the data (stages go to crm_pipeline_stages, not crm_pipelines)
       const { stages, ...pipelineData } = data;
-      
-      // Create pipeline
+
+      // Get the first stage name - default to 'info' if not provided
+      const stagesFromData = stages || ['info', 'anticipo', 'pedido', 'ya_clinica', 'cirugia'];
+      const firstStage = stagesFromData[0];
+
+      // Create pipeline with explicit current_stage
       const { data: pipeline, error } = await supabase
         .from('crm_pipelines')
         .insert({
           ...pipelineData,
           created_by: user?.id,
+          current_stage: firstStage,
         })
         .select()
         .single();
@@ -185,7 +190,6 @@ export const useCreatePipeline = () => {
       if (error) throw error;
 
       // Create initial stages using custom stages or default
-      const stagesFromData = stages || ['info', 'anticipo', 'pedido', 'ya_clinica', 'cirugia'];
       const stageInserts = stagesFromData.map((stage, index) => ({
         pipeline_id: pipeline.id,
         stage_name: stage,
