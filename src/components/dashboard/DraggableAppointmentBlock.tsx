@@ -1,6 +1,6 @@
 import { Appointment } from '@/types/database';
-import { format, differenceInMinutes, addMinutes } from 'date-fns';
-import { useState, useRef } from 'react';
+import { differenceInMinutes, addMinutes } from 'date-fns';
+import { useState, useRef, useEffect } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
@@ -43,6 +43,7 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
   const [isResizing, setIsResizing] = useState(false);
   const [resizeDirection, setResizeDirection] = useState<'top' | 'bottom' | null>(null);
   const [tempHeight, setTempHeight] = useState<number | null>(null);
+  const [committedHeight, setCommittedHeight] = useState<number | null>(null); // Mantiene el height después de soltar hasta que se actualice el appointment
   const resizeStartY = useRef<number>(0);
   const resizeStartTime = useRef<Date | null>(null);
   const queryClient = useQueryClient();
@@ -54,6 +55,16 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
   );
   // Each slot = 60px per 15 minutes
   const heightInPx = (duration / 15) * 60;
+
+  // Determinar qué height usar: tempHeight durante resize, committedHeight después de soltar, heightInPx cuando se actualiza
+  const displayHeight = tempHeight !== null ? tempHeight : (committedHeight !== null ? committedHeight : heightInPx);
+
+  // Limpiar committedHeight cuando el appointment se actualice (heightInPx cambia a coincidir)
+  useEffect(() => {
+    if (committedHeight !== null && Math.abs(heightInPx - committedHeight) < 1) {
+      setCommittedHeight(null);
+    }
+  }, [heightInPx, committedHeight]);
 
   const updateMutation = useMutation({
     mutationFn: async ({ newStartTime, newEndTime }: { newStartTime?: Date; newEndTime?: Date }) => {
@@ -86,7 +97,8 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['appointments'] });
+      // Usar refetch en lugar de invalidate para actualizar los datos sin desmontar el componente
+      queryClient.refetchQueries({ queryKey: ['appointments'], exact: false });
       toast.success('Cita actualizada');
     },
     onError: (error: any) => {
@@ -149,21 +161,25 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
 
       if (direction === 'bottom') {
         const newEndTime = addMinutes(resizeStartTime.current, snappedMinutes);
-        const duration = differenceInMinutes(newEndTime, new Date(appointment.starts_at));
-        
-        if (duration >= 15 && duration <= 240) {
+        const newDuration = differenceInMinutes(newEndTime, new Date(appointment.starts_at));
+
+        if (newDuration >= 15 && newDuration <= 240) {
+          // Guardar el height final antes de limpiar tempHeight
+          setCommittedHeight((newDuration / 15) * 60);
           updateMutation.mutate({ newEndTime });
         } else {
           toast.error('La duración debe estar entre 15 minutos y 4 horas');
         }
       } else {
         const newStartTime = addMinutes(resizeStartTime.current, snappedMinutes);
-        const duration = differenceInMinutes(new Date(appointment.ends_at), newStartTime);
-        
-        if (duration >= 15 && duration <= 240) {
-          updateMutation.mutate({ 
-            newStartTime, 
-            newEndTime: new Date(appointment.ends_at) 
+        const newDuration = differenceInMinutes(new Date(appointment.ends_at), newStartTime);
+
+        if (newDuration >= 15 && newDuration <= 240) {
+          // Guardar el height final antes de limpiar tempHeight
+          setCommittedHeight((newDuration / 15) * 60);
+          updateMutation.mutate({
+            newStartTime,
+            newEndTime: new Date(appointment.ends_at)
           });
         } else {
           toast.error('La duración debe estar entre 15 minutos y 4 horas');
@@ -200,7 +216,7 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
       onDragEnd={handleDragEnd}
       onClick={() => !isResizing && onClick(appointment)}
       onDoubleClick={() => !isResizing && onDoubleClick?.(appointment)}
-      style={{ height: `${tempHeight !== null ? tempHeight : heightInPx}px` }}
+      style={{ height: `${displayHeight}px` }}
       className={`
         relative px-2 py-1.5 mb-0.5 rounded border-l-4 transition-all leading-tight group
         ${colorClass}
@@ -211,7 +227,7 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
       title={`${appointment.patient?.first_name} ${appointment.patient?.last_name} - ${appointment.reason || ''}`}
     >
       {isResizing && tempHeight && (
-        <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-primary text-primary-foreground text-xs px-2 py-1 rounded shadow-lg z-10 whitespace-nowrap">
+        <div className="absolute top-1 right-1 bg-primary text-primary-foreground text-xs px-2 py-0.5 rounded shadow-lg z-20 whitespace-nowrap font-medium">
           {Math.round((tempHeight / 60) * 15)} min
         </div>
       )}

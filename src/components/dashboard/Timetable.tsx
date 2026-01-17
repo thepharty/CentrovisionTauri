@@ -538,9 +538,9 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
                   const isDoctor = 'user_id' in col;
                   const colId = isDoctor ? col.user_id : col.id;
                   return (
-                    <div 
-                      key={`${format(day, 'yyyy-MM-dd')}-${colId}-${hour}-${minutes}`} 
-                      className="relative border-r h-full p-1 hover:bg-accent/5 transition-colors cursor-pointer overflow-hidden flex-1 basis-0 min-w-[120px] max-w-[350px]"
+                    <div
+                      key={`${format(day, 'yyyy-MM-dd')}-${colId}-${hour}-${minutes}`}
+                      className="relative border-r h-full p-1 hover:bg-accent/5 transition-colors cursor-pointer overflow-visible flex-1 basis-0 min-w-[120px] max-w-[350px]"
                       onDrop={(e) => handleDrop(e, day, hour, minutes, colId)}
                       onDragOver={handleDragOver}
                       onDoubleClick={() => {
