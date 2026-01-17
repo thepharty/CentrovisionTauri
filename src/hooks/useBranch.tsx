@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 
 interface Branch {
@@ -29,6 +29,7 @@ export const useBranch = () => useContext(BranchContext);
 
 export const BranchProvider = ({ children }: { children: ReactNode }) => {
   const [currentBranch, setCurrentBranchState] = useState<Branch | null>(null);
+  const queryClient = useQueryClient();
 
   // Fetch all active branches
   const { data: branches = [], isLoading } = useQuery({
@@ -68,8 +69,8 @@ export const BranchProvider = ({ children }: { children: ReactNode }) => {
   const setCurrentBranch = (branch: Branch) => {
     setCurrentBranchState(branch);
     localStorage.setItem('current-branch-id', branch.id);
-    // Reload to update all queries with new branch
-    window.location.reload();
+    // Invalidate all queries to refetch with new branch
+    queryClient.invalidateQueries();
   };
 
   return (
