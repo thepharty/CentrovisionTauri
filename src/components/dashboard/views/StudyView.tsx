@@ -130,11 +130,28 @@ export function StudyView({ encounterId, appointmentId }: StudyViewProps) {
     return colors[eye] || 'bg-muted';
   };
 
-  const handleDownload = (url: string, fileName: string) => {
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = fileName;
-    link.click();
+  const handleDownload = async (url: string, fileName: string) => {
+    try {
+      // Fetch el archivo como blob para poder descargarlo (cross-origin)
+      const response = await fetch(url);
+      const blob = await response.blob();
+
+      // Crear URL temporal del blob
+      const blobUrl = window.URL.createObjectURL(blob);
+
+      // Crear link y forzar descarga
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+
+      // Limpiar
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      console.error('Error al descargar archivo:', error);
+    }
   };
 
   return (
