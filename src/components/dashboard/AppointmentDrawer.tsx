@@ -48,7 +48,7 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
         .maybeSingle();
       return data;
     },
-    enabled: !!appointment && appointment.status === 'done' && !appointment.is_courtesy && open,
+    enabled: !!appointment && !appointment.is_courtesy && open,
   });
 
   const canInvoice = roles.some(r => r === 'admin' || r === 'caja');
