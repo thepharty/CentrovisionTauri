@@ -69,8 +69,16 @@ export const BranchProvider = ({ children }: { children: ReactNode }) => {
   const setCurrentBranch = (branch: Branch) => {
     setCurrentBranchState(branch);
     localStorage.setItem('current-branch-id', branch.id);
-    // Invalidate all queries to refetch with new branch
-    queryClient.invalidateQueries();
+
+    // Invalidate specific queries that depend on branch
+    // Use setTimeout to avoid navigation interruption
+    setTimeout(() => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['caja-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['appointments'] });
+      queryClient.invalidateQueries({ queryKey: ['patients'] });
+      queryClient.invalidateQueries({ queryKey: ['pipelines'] });
+    }, 0);
   };
 
   return (
