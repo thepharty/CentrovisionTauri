@@ -49,8 +49,9 @@ export const PipelineListView = ({ pipelines, procedureFilter, searchQuery, stat
   // Filter pipelines
   const filteredPipelines = useMemo(() => {
     return pipelines.filter((pipeline) => {
-      // Status filter
-      if (statusFilter !== 'all' && pipeline.status !== statusFilter) {
+      // Status filter - normalize 'active' to 'activo' for comparison
+      const normalizedStatus = pipeline.status === 'active' ? 'activo' : pipeline.status;
+      if (statusFilter !== 'all' && normalizedStatus !== statusFilter) {
         return false;
       }
 

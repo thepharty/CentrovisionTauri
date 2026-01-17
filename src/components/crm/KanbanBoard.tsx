@@ -72,8 +72,8 @@ export const KanbanBoard = ({ pipelines, procedureFilter, searchQuery, flowCateg
   // Filter pipelines
   const filteredPipelines = useMemo(() => {
     return pipelines.filter((pipeline) => {
-      // Only show active pipelines
-      if (pipeline.status !== 'activo') return false;
+      // Only show active pipelines (both 'activo' in Spanish and 'active' in English)
+      if (pipeline.status !== 'activo' && pipeline.status !== 'active') return false;
 
       // Flow category filter
       const procedureName = pipeline.procedure_type?.name;
