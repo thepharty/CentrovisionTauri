@@ -228,16 +228,16 @@ export const PdfViewer = ({ src, height = '80vh' }: PdfViewerProps) => {
       </div>
 
       {/* Contenedor con scroll */}
-      <div 
-        ref={scrollContainerRef} 
-        className="w-full overflow-auto overscroll-contain max-w-full"
-        style={{ height, maxWidth: '100%' }}
+      <div
+        ref={scrollContainerRef}
+        className="w-full h-full overflow-auto overscroll-contain"
+        style={{ height }}
       >
         <div
-          className="max-w-full"
+          className="inline-block min-w-full"
           style={{
             transform: `scale(${zoom})`,
-            transformOrigin: 'top center',
+            transformOrigin: 'top left',
             transition: 'transform 0.2s ease-out',
           }}
         >
