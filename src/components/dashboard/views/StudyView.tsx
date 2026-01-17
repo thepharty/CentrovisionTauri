@@ -1,0 +1,222 @@
+import { useQuery } from '@tanstack/react-query';
+import { supabase } from '@/integrations/supabase/client';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Label } from '@/components/ui/label';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { FileImage, Video, Download } from 'lucide-react';
+import { useState, useEffect } from 'react';
+
+interface StudyViewProps {
+  encounterId?: string;
+  appointmentId?: string;
+}
+
+export function StudyView({ encounterId, appointmentId }: StudyViewProps) {
+  const [filesWithUrls, setFilesWithUrls] = useState<any[]>([]);
+
+  // Fetch study data
+  const { data: study, isLoading } = useQuery({
+    queryKey: ['study-view', encounterId, appointmentId],
+    queryFn: async () => {
+      console.log('🔍 [StudyView] Props recibidas:', { encounterId, appointmentId });
+      
+      // @ts-ignore - Type inference issue with Supabase query
+      let query = supabase.from('studies').select('*');
+      
+      if (appointmentId) {
+        console.log('📍 [StudyView] Buscando por appointment_id:', appointmentId);
+        query = query.eq('appointment_id', appointmentId);
+      } else if (encounterId) {
+        console.log('📍 [StudyView] Buscando por encounter_id:', encounterId);
+        // Buscar por encounter_id no funciona ya que studies no tiene esa columna
+        // En su lugar, buscar el appointment_id del encounter
+        const { data: encounter } = await supabase
+          .from('encounters')
+          .select('appointment_id')
+          .eq('id', encounterId)
+          .single();
+        
+        console.log('📋 [StudyView] Encounter encontrado:', encounter);
+        
+        if (encounter?.appointment_id) {
+          console.log('✓ [StudyView] Usando appointment_id del encounter:', encounter.appointment_id);
+          query = query.eq('appointment_id', encounter.appointment_id);
+        } else {
+          console.log('❌ [StudyView] No se encontró appointment_id en el encounter');
+          return null;
+        }
+      }
+      
+      const { data, error } = await query.maybeSingle();
+      
+      console.log('✅ [StudyView] Resultado de query studies:', { data, error });
+      
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!(encounterId || appointmentId),
+  });
+
+  // Fetch study files
+  const { data: studyFiles } = useQuery<any[]>({
+    queryKey: ['study-files', study?.id],
+    queryFn: async () => {
+      console.log('📁 [StudyView] Buscando archivos para study_id:', study?.id);
+      if (!study?.id) return [];
+      // @ts-ignore - Type inference issue with Supabase query
+      const { data, error } = await supabase
+        .from('study_files')
+        .select('*')
+        .eq('study_id', study.id);
+      
+      console.log('✅ [StudyView] Archivos encontrados:', { count: data?.length, data, error });
+      
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: !!study?.id,
+  });
+
+  // Get signed URLs when files are loaded
+  useEffect(() => {
+    const fetchSignedUrls = async () => {
+      console.log('🔗 [StudyView] Generando URLs firmadas para:', studyFiles?.length, 'archivos');
+      if (!studyFiles || studyFiles.length === 0) {
+        setFilesWithUrls([]);
+        return;
+      }
+
+      const filesWithSignedUrls = await Promise.all(
+        studyFiles.map(async (file) => {
+          const { data } = await supabase.storage
+            .from('studies')
+            .createSignedUrl(file.file_path, 3600);
+          console.log('🔐 [StudyView] URL firmada generada para:', file.file_path, data?.signedUrl ? '✓' : '✗');
+          return { ...file, signedUrl: data?.signedUrl };
+        })
+      );
+      console.log('✅ [StudyView] URLs firmadas generadas:', filesWithSignedUrls.length);
+      setFilesWithUrls(filesWithSignedUrls);
+    };
+
+    fetchSignedUrls();
+  }, [studyFiles]);
+
+  if (isLoading) {
+    return (
+      <div className="space-y-4 p-4">
+        <Skeleton className="h-20 w-full" />
+        <Skeleton className="h-32 w-full" />
+        <Skeleton className="h-32 w-full" />
+      </div>
+    );
+  }
+
+  if (!study) {
+    return (
+      <div className="p-6 text-center text-muted-foreground">
+        No hay datos de estudio disponibles.
+      </div>
+    );
+  }
+
+  const getEyeColor = (eye: string) => {
+    const colors: Record<string, string> = {
+      'OD': 'bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20',
+      'OI': 'bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20',
+      'OU': 'bg-purple-500/10 text-purple-700 dark:text-purple-400 border-purple-500/20',
+    };
+    return colors[eye] || 'bg-muted';
+  };
+
+  const handleDownload = (url: string, fileName: string) => {
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    link.click();
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Información del Estudio */}
+      <div className="bg-card rounded-lg border p-6">
+        <h2 className="text-xl font-semibold mb-4">Información del Estudio</h2>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <Label>Título de estudio</Label>
+            <div className="px-3 py-2 rounded-md border bg-muted text-sm mt-2">
+              {study.title}
+            </div>
+          </div>
+          <div>
+            <Label>Ojo</Label>
+            <div className="mt-2">
+              <Badge className={getEyeColor(study.eye_side)} variant="outline">
+                {study.eye_side}
+              </Badge>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Archivos Adjuntos */}
+      {filesWithUrls && filesWithUrls.length > 0 && (
+        <div className="bg-card rounded-lg border p-6">
+          <h2 className="text-xl font-semibold mb-4">Archivos Adjuntos</h2>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            {filesWithUrls.map((file: any) => (
+              <div
+                key={file.id}
+                className="relative border rounded-lg overflow-hidden hover:shadow-md transition-shadow group"
+              >
+                {file.mime_type?.startsWith('image/') ? (
+                  <img
+                    src={file.signedUrl || ''}
+                    alt="Estudio"
+                    className="w-full h-32 object-cover"
+                  />
+                ) : file.mime_type?.startsWith('video/') ? (
+                  <div className="relative w-full h-32 bg-muted flex items-center justify-center">
+                    <Video className="h-12 w-12 text-muted-foreground" />
+                    <video
+                      src={file.signedUrl || ''}
+                      className="absolute inset-0 w-full h-full object-cover opacity-50"
+                    />
+                  </div>
+                ) : (
+                  <div className="w-full h-32 bg-muted flex items-center justify-center">
+                    <FileImage className="h-12 w-12 text-muted-foreground" />
+                  </div>
+                )}
+                <div className="p-2 bg-card flex items-center justify-between">
+                  <span className="text-xs truncate flex-1">
+                    {file.file_path.split('/').pop()}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 w-7 p-0 ml-1"
+                    onClick={() => handleDownload(file.signedUrl, file.file_path.split('/').pop())}
+                  >
+                    <Download className="h-3 w-3" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Comentarios */}
+      {study.comments && (
+        <div className="bg-card rounded-lg border p-6">
+          <h2 className="text-xl font-semibold mb-4">Comentarios</h2>
+          <div className="px-3 py-2 rounded-md border bg-muted text-sm whitespace-pre-wrap">
+            {study.comments}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,1 @@
+ALTER TABLE public.profiles ADD COLUMN is_visible_in_dashboard boolean NOT NULL DEFAULT true;

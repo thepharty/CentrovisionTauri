@@ -1,0 +1,25 @@
+project_id = "ydscwmgiiqhyovhzgnxr"
+
+[functions.generate-prescription-pdf]
+verify_jwt = true
+
+[functions.submit-registration]
+verify_jwt = false
+
+[functions.approve-registration]
+verify_jwt = true
+
+[functions.create-user]
+verify_jwt = true
+
+[functions.delete-user]
+verify_jwt = true
+
+[functions.cleanup-old-photos]
+verify_jwt = false
+
+[functions.update-user-password]
+verify_jwt = true
+
+[functions.export-migrations]
+verify_jwt = true

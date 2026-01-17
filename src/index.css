@@ -1,0 +1,119 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    /* Base colors */
+    --background: 220 20% 97%;
+    --foreground: 220 20% 15%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 220 20% 15%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 20% 15%;
+
+    /* Primary - Azul para consultas */
+    --primary: 221 74% 54%;  /* #2C65E5 */
+    --primary-foreground: 0 0% 100%;
+
+    /* Secondary - Gris claro */
+    --secondary: 220 15% 96%;
+    --secondary-foreground: 220 20% 15%;
+
+    --muted: 220 15% 96%;
+    --muted-foreground: 220 10% 46%;
+
+    --accent: 220 15% 96%;
+    --accent-foreground: 220 20% 15%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 221 74% 54%;
+
+    --radius: 0.5rem;
+
+    /* Appointment type colors - Tonos más diferenciados */
+    --consulta: 221 83% 70%;           /* Azul - Nueva consulta */
+    --reconsulta-corta: 45 90% 68%;    /* Amarillo - Reconsulta <3m */
+    --reconsulta-larga: 283 60% 70%;   /* Morado - Reconsulta >3m */
+    --post-operado: 25 90% 68%;        /* Naranja - Post operado */
+    --lectura: 340 80% 72%;            /* Rosado - Lectura resultados */
+    --cirugia: 162 70% 65%;            /* Verde - Cirugía */
+    --procedimiento: 190 75% 68%;      /* Celeste - Procedimiento */
+    --estudio: 30 50% 65%;             /* Café/Marrón - Estudio */
+
+    /* Status colors */
+    --scheduled: 221 74% 54%;
+    --checked-in: 283 39% 53%;
+    --done: 162 64% 48%;
+    --cancelled: 0 0% 60%;
+    --no-show: 6 78% 57%;
+
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 220 20% 15%;
+    --sidebar-primary: 221 74% 54%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 15% 96%;
+    --sidebar-accent-foreground: 220 20% 15%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 221 74% 54%;
+  }
+
+  .dark {
+    --background: 220 20% 10%;
+    --foreground: 220 15% 95%;
+
+    --card: 220 20% 13%;
+    --card-foreground: 220 15% 95%;
+
+    --popover: 220 20% 13%;
+    --popover-foreground: 220 15% 95%;
+
+    --primary: 221 74% 54%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 20% 17%;
+    --secondary-foreground: 220 15% 95%;
+
+    --muted: 220 20% 17%;
+    --muted-foreground: 220 10% 65%;
+
+    --accent: 220 20% 17%;
+    --accent-foreground: 220 15% 95%;
+
+    --destructive: 6 78% 57%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 20% 20%;
+    --input: 220 20% 20%;
+    --ring: 221 74% 54%;
+
+    --sidebar-background: 220 20% 13%;
+    --sidebar-foreground: 220 15% 95%;
+    --sidebar-primary: 221 74% 54%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 20% 17%;
+    --sidebar-accent-foreground: 220 15% 95%;
+    --sidebar-border: 220 20% 20%;
+    --sidebar-ring: 221 74% 54%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}
