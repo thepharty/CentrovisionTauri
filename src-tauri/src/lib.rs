@@ -144,6 +144,8 @@ pub fn run() {
             // Cache commands (write-through)
             commands::save_appointments_to_sqlite,
             commands::remove_appointment_from_sqlite,
+            // Print command
+            commands::print_webview,
             // Auth commands
             auth::cache_auth_session,
             auth::get_cached_session,

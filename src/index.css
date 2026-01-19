@@ -117,3 +117,31 @@ All colors MUST be HSL.
     @apply bg-background text-foreground;
   }
 }
+
+/* Print styles - hide everything except print content */
+@media print {
+  /* Hide all app content */
+  body > *:not(#print-content) {
+    display: none !important;
+  }
+
+  /* Show print content */
+  #print-content {
+    display: block !important;
+    visibility: visible !important;
+    position: static !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+    padding: 20px !important;
+    margin: 0 !important;
+    background: white !important;
+    color: black !important;
+    font-family: system-ui, -apple-system, sans-serif !important;
+  }
+
+  /* Reset print content styles */
+  #print-content * {
+    visibility: visible !important;
+  }
+}

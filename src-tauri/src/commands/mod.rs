@@ -2,7 +2,7 @@ use crate::db::Database;
 use crate::AppState;
 use crate::connection_manager::ConnectionStatus;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{State, AppHandle, Manager};
 use std::sync::Arc;
 
 // ============================================================
@@ -1001,5 +1001,29 @@ pub async fn remove_appointment_from_sqlite(
         .map_err(|e| e.to_string())?;
 
     log::info!("Removed appointment {} from SQLite cache", id);
+    Ok(())
+}
+
+// ============================================================
+// COMMANDS - PRINT HTML
+// ============================================================
+
+/// Trigger print dialog on the main webview
+/// On macOS: uses native webview.print()
+/// On Windows: window.print() is called from frontend
+#[tauri::command]
+pub async fn print_webview(app: AppHandle) -> Result<(), String> {
+    log::info!("print_webview: Opening print dialog");
+
+    // Get the main window's webview
+    let main_window = app.get_webview_window("main")
+        .ok_or("Could not find main window")?;
+
+    // Call the native print method (works on macOS, on Windows will fallback)
+    main_window.print()
+        .map_err(|e| format!("Failed to print: {}", e))?;
+
+    log::info!("print_webview: Print dialog opened");
+
     Ok(())
 }
