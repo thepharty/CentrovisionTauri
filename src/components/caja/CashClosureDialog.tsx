@@ -19,6 +19,8 @@ import { Loader2, DollarSign, ShoppingCart, Stethoscope, Syringe, FileText, Pack
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { generateCashClosureHTML, CashClosureData } from '@/lib/printTemplates';
+import { PrintPreviewDialog } from '@/components/dashboard/PrintPreviewDialog';
 
 interface CashClosureDialogProps {
   open: boolean;
@@ -55,6 +57,8 @@ export function CashClosureDialog({ open, onOpenChange }: CashClosureDialogProps
   const queryClient = useQueryClient();
   const { currentBranch } = useBranch();
   const [isClosing, setIsClosing] = useState(false);
+  const [printHtmlContent, setPrintHtmlContent] = useState<string | null>(null);
+  const [showPrintPreview, setShowPrintPreview] = useState(false);
   
   const today = clinicNow();
   const startOfDay = clinicStartOfDay(today);
@@ -308,7 +312,26 @@ export function CashClosureDialog({ open, onOpenChange }: CashClosureDialogProps
   };
 
   const handlePrint = () => {
-    window.print();
+    const printData: CashClosureData = {
+      date: format(today, "d 'de' MMMM 'de' yyyy", { locale: es }),
+      period: `${format(startOfDay, "HH:mm")} - ${format(clinicNow(), "HH:mm")}`,
+      closedBy: userProfile?.full_name || 'N/A',
+      branchName: currentBranch?.name || 'N/A',
+      serviceSales: serviceSales,
+      inventorySales: inventorySales,
+      paymentMethods: paymentMethods,
+      summary: {
+        totalInvoiced: dailySummary?.totalInvoiced || 0,
+        totalCollected: dailySummary?.totalCollected || 0,
+        totalPending: dailySummary?.totalPending || 0,
+        totalDiscounts: dailySummary?.totalDiscounts || 0,
+      },
+      invoices: invoices,
+    };
+
+    const html = generateCashClosureHTML(printData);
+    setPrintHtmlContent(html);
+    setShowPrintPreview(true);
   };
 
   const handleExportPDF = () => {
@@ -926,6 +949,16 @@ export function CashClosureDialog({ open, onOpenChange }: CashClosureDialogProps
           </div>
         </div>
       </DialogContent>
+
+      <PrintPreviewDialog
+        isOpen={showPrintPreview}
+        onClose={() => {
+          setShowPrintPreview(false);
+          setPrintHtmlContent(null);
+        }}
+        htmlContent={printHtmlContent}
+        title="Cierre de Caja"
+      />
     </Dialog>
   );
 }
