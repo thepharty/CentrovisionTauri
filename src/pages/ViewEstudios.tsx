@@ -9,6 +9,7 @@ import { es } from 'date-fns/locale';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { PdfViewer } from '@/components/pdf/PdfViewer';
+import { PdfThumbnail } from '@/components/pdf/PdfThumbnail';
 
 type StudyFile = {
   id: string;
@@ -392,10 +393,10 @@ export default function ViewEstudios() {
                       </>
                     ) : file.mime_type === 'application/pdf' ? (
                       <>
-                        <div className="w-full h-full bg-muted flex flex-col items-center justify-center gap-2">
-                          <FileText className="h-16 w-16 text-primary" />
-                          <span className="text-xs font-medium text-primary px-2 py-1 bg-primary/10 rounded">PDF</span>
-                        </div>
+                        <PdfThumbnail
+                          src={file.signedUrl || ''}
+                          className="w-full h-full"
+                        />
                         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
                           <Maximize2 className="h-8 w-8 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
                         </div>

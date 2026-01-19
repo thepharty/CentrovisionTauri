@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { DndContext, DragEndEvent, DragOverlay, DragStartEvent, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { CRMPipeline, useUpdatePipelineStage } from '@/hooks/useCRMPipelines';
 import { useCRMProcedureTypes } from '@/hooks/useCRMProcedureTypes';
@@ -45,6 +45,16 @@ export const KanbanBoard = ({ pipelines, procedureFilter, searchQuery, flowCateg
   const [detailOpen, setDetailOpen] = useState(false);
   const updateStage = useUpdatePipelineStage();
   const { data: procedureTypes } = useCRMProcedureTypes();
+
+  // Keep selectedPipeline in sync with updated pipelines data
+  useEffect(() => {
+    if (selectedPipeline && pipelines) {
+      const updatedPipeline = pipelines.find(p => p.id === selectedPipeline.id);
+      if (updatedPipeline && updatedPipeline.current_stage !== selectedPipeline.current_stage) {
+        setSelectedPipeline(updatedPipeline);
+      }
+    }
+  }, [pipelines, selectedPipeline]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {

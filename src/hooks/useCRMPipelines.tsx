@@ -218,26 +218,37 @@ export const useUpdatePipelineStage = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ 
-      pipelineId, 
+    mutationFn: async ({
+      pipelineId,
       newStage,
       notes,
-      amount 
-    }: { 
-      pipelineId: string; 
+      amount
+    }: {
+      pipelineId: string;
       newStage: string;
       notes?: string;
       amount?: number;
     }) => {
       const { data: { user } } = await supabase.auth.getUser();
 
-      // Update pipeline current stage
-      const { error: pipelineError } = await supabase
+      // IMPORTANTE: Usar .select().single() para verificar que el UPDATE funcionó
+      // RLS puede bloquear silenciosamente sin devolver error
+      const { data: updatedPipeline, error: pipelineError } = await supabase
         .from('crm_pipelines')
         .update({ current_stage: newStage })
-        .eq('id', pipelineId);
+        .eq('id', pipelineId)
+        .select('id, current_stage')
+        .single();
 
-      if (pipelineError) throw pipelineError;
+      if (pipelineError) {
+        console.error('Error updating pipeline:', pipelineError);
+        throw new Error(`No se pudo actualizar la etapa: ${pipelineError.message}`);
+      }
+
+      // Verificar que el update realmente ocurrió (RLS puede bloquearlo silenciosamente)
+      if (!updatedPipeline || updatedPipeline.current_stage !== newStage) {
+        throw new Error('No tienes permisos para actualizar este pipeline. Contacta al administrador.');
+      }
 
       // Get current stages
       const { data: stages } = await supabase
@@ -248,16 +259,16 @@ export const useUpdatePipelineStage = () => {
 
       if (stages) {
         const stageIndex = stages.findIndex(s => s.stage_name === newStage);
-        
+
         // Update all previous stages to completed
         for (let i = 0; i < stageIndex; i++) {
           if (stages[i].status !== 'completed') {
             await supabase
               .from('crm_pipeline_stages')
-              .update({ 
-                status: 'completed', 
+              .update({
+                status: 'completed',
                 completed_at: new Date().toISOString(),
-                updated_by: user?.id 
+                updated_by: user?.id
               })
               .eq('id', stages[i].id);
           }
@@ -266,7 +277,7 @@ export const useUpdatePipelineStage = () => {
         // Update current stage
         await supabase
           .from('crm_pipeline_stages')
-          .update({ 
+          .update({
             status: 'in_progress',
             notes: notes || null,
             amount: amount || null,
@@ -278,14 +289,47 @@ export const useUpdatePipelineStage = () => {
 
       return { pipelineId, newStage };
     },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['crm-pipelines'] });
-      queryClient.invalidateQueries({ queryKey: ['crm-pipeline-stages', data.pipelineId] });
+    // Optimistic update: actualizar UI inmediatamente antes de que el servidor responda
+    onMutate: async ({ pipelineId, newStage }) => {
+      // Cancelar cualquier refetch en progreso para evitar sobrescribir el optimistic update
+      await queryClient.cancelQueries({ queryKey: ['crm-pipelines'] });
+
+      // Guardar snapshot del estado anterior (para rollback si hay error)
+      const previousQueries = queryClient.getQueriesData<CRMPipeline[]>({ queryKey: ['crm-pipelines'] });
+
+      // Actualizar optimisticamente TODAS las queries que coincidan con ['crm-pipelines']
+      queryClient.setQueriesData<CRMPipeline[]>(
+        { queryKey: ['crm-pipelines'] },
+        (old) => {
+          if (!old) return old;
+          return old.map(pipeline =>
+            pipeline.id === pipelineId
+              ? { ...pipeline, current_stage: newStage }
+              : pipeline
+          );
+        }
+      );
+
+      return { previousQueries };
+    },
+    onError: (error, _variables, context) => {
+      // Rollback al estado anterior si hay error
+      if (context?.previousQueries) {
+        context.previousQueries.forEach(([queryKey, data]) => {
+          queryClient.setQueryData(queryKey, data);
+        });
+      }
+      console.error('Error updating stage:', error);
+      toast.error(error instanceof Error ? error.message : 'Error al actualizar la etapa');
+    },
+    onSuccess: () => {
       toast.success('Etapa actualizada');
     },
-    onError: (error) => {
-      console.error('Error updating stage:', error);
-      toast.error('Error al actualizar la etapa');
+    onSettled: (_data, _error, variables) => {
+      // Siempre refetch después de éxito o error para sincronizar con el servidor
+      queryClient.invalidateQueries({ queryKey: ['crm-pipelines'] });
+      // Usar variables en lugar de data para asegurar que siempre tengamos el pipelineId
+      queryClient.invalidateQueries({ queryKey: ['crm-pipeline-stages', variables.pipelineId] });
     },
   });
 };

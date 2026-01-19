@@ -14,6 +14,7 @@ import { toast } from 'sonner';
 import { differenceInYears } from 'date-fns';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { compressImages } from '@/lib/imageCompression';
+import { PdfThumbnail } from '@/components/pdf/PdfThumbnail';
 
 type SavedFile = {
   id: string;
@@ -601,9 +602,10 @@ export default function Estudios() {
                           />
                         </div>
                       ) : savedFile.mime_type === 'application/pdf' ? (
-                        <div className="w-full h-32 bg-muted flex items-center justify-center">
-                          <FileText className="h-12 w-12 text-muted-foreground" />
-                        </div>
+                        <PdfThumbnail
+                          src={savedFile.signedUrl || ''}
+                          className="w-full h-32"
+                        />
                       ) : (
                         <div className="w-full h-32 bg-muted flex items-center justify-center">
                           <FileImage className="h-12 w-12 text-muted-foreground" />
