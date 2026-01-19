@@ -8,6 +8,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Printer, X, Mail } from 'lucide-react';
+import { isTauri } from '@/lib/dataSource';
 
 interface PrintPreviewDialogProps {
   isOpen: boolean;
@@ -24,10 +25,54 @@ export function PrintPreviewDialog({
 }: PrintPreviewDialogProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
-  const handlePrint = () => {
-    const iframe = iframeRef.current;
-    if (iframe?.contentWindow) {
-      iframe.contentWindow.print();
+  const handlePrint = async () => {
+    if (isTauri() && htmlContent) {
+      // En Tauri, abrir en navegador del sistema para imprimir
+      try {
+        const { open } = await import('@tauri-apps/plugin-shell');
+        // Crear un blob URL con el contenido HTML + script de auto-print
+        const printHtml = `
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8">
+            <title>Imprimir</title>
+          </head>
+          <body>
+            ${htmlContent}
+            <script>
+              window.onload = function() {
+                window.print();
+              }
+            </script>
+          </body>
+          </html>
+        `;
+        // Crear archivo temporal y abrirlo
+        const blob = new Blob([printHtml], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+
+        // Abrir en nueva ventana del navegador web
+        const printWindow = window.open(url, '_blank');
+        if (printWindow) {
+          printWindow.onload = () => {
+            printWindow.print();
+          };
+        }
+      } catch (error) {
+        console.error('Error al imprimir:', error);
+        // Fallback: intentar con iframe
+        const iframe = iframeRef.current;
+        if (iframe?.contentWindow) {
+          iframe.contentWindow.print();
+        }
+      }
+    } else {
+      // En web normal, usar el método del iframe
+      const iframe = iframeRef.current;
+      if (iframe?.contentWindow) {
+        iframe.contentWindow.print();
+      }
     }
   };
 

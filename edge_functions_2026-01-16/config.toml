@@ -1,0 +1,12 @@
+# Supabase Edge Functions Configuration
+# =====================================
+# Este archivo debe colocarse en supabase/config.toml
+
+[project]
+project_id = "TU_PROJECT_ID"
+
+# Funciones que no requieren autenticación JWT
+[functions.submit-registration]
+verify_jwt = false
+
+# Todas las demás funciones requieren JWT por defecto

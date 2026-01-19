@@ -553,7 +553,7 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
   // Si no hay médicos seleccionados ni salas, y no somos diagnóstico, mostrar mensaje
   if (selectedDoctorIds.length === 0 && !showDiagnosticoRoom && !showQuirofanoRoom && role !== 'diagnostico') {
     return (
-      <div className="h-[calc(100vh-180px)] overflow-hidden border rounded-lg flex items-center justify-center">
+      <div className="h-[calc(100vh-120px)] overflow-hidden border rounded-lg flex items-center justify-center">
         <div className="text-center p-8">
           <p className="text-lg text-muted-foreground">
             Seleccione médicos, sala de diagnóstico o quirófano para ver las agendas
@@ -564,7 +564,7 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
   }
 
   return (
-    <div className="h-[calc(100vh-180px)] overflow-x-hidden overflow-y-auto border rounded-lg">
+    <div className="h-[calc(100vh-120px)] overflow-x-hidden overflow-y-auto border rounded-lg">
       {/* Header fijo */}
       <div className="flex border-b bg-card sticky top-0 z-[5]">
         {/* Time header - sticky */}
@@ -582,9 +582,9 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
                 const isQuir = !isDoctor && col.kind === 'quirofano';
                 const label = isDiag ? 'Diagnóstico' : isQuir ? 'Quirófano 1' : (isDoctor ? col.full_name : col.name);
                 return (
-                  <div 
-                    key={`${format(day, 'yyyy-MM-dd')}-${colId}`} 
-                    className="border-r p-2 text-center overflow-hidden flex-1 basis-0 min-w-[120px] max-w-[350px]"
+                  <div
+                    key={`${format(day, 'yyyy-MM-dd')}-${colId}`}
+                    className="border-r p-2 text-center overflow-hidden flex-1"
                   >
                     {view === 'week' && (
                       <div className="font-medium text-sm truncate">
@@ -627,7 +627,7 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
                   return (
                     <div
                       key={`${format(day, 'yyyy-MM-dd')}-${colId}-${hour}-${minutes}`}
-                      className="relative border-r h-full p-1 hover:bg-accent/5 transition-colors cursor-pointer overflow-visible flex-1 basis-0 min-w-[120px] max-w-[350px]"
+                      className="relative border-r h-full p-1 hover:bg-accent/5 transition-colors cursor-pointer overflow-visible flex-1"
                       onDrop={(e) => handleDrop(e, day, hour, minutes, colId)}
                       onDragOver={handleDragOver}
                       onDoubleClick={() => {
