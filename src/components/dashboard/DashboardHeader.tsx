@@ -9,6 +9,7 @@ import { useState } from 'react';
 import { AppointmentDialog } from './AppointmentDialog';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { SyncIndicator } from '@/components/SyncIndicator';
 
 interface DashboardHeaderProps {
   currentDate: Date;
@@ -105,6 +106,8 @@ export function DashboardHeader({ currentDate, view, onViewChange, onDateChange,
           </div>
 
           <div className="flex items-center gap-2 md:gap-4 flex-wrap flex-shrink-0 min-w-0">
+            <SyncIndicator />
+
             <Tabs value={view} onValueChange={(v) => onViewChange(v as 'day' | 'week')}>
               <TabsList>
                 <TabsTrigger value="day">Día</TabsTrigger>

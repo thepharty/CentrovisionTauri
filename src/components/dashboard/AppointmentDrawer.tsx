@@ -7,6 +7,16 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -33,6 +43,7 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
   const navigate = useNavigate();
   const { hasRole, roles } = useAuth();
   const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [hasEncounter, setHasEncounter] = useState(false);
   const [encounterId, setEncounterId] = useState<string | null>(null);
 
@@ -211,10 +222,12 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
     }
   };
 
-  const handleDelete = async () => {
-    if (!confirm('¿Está seguro de que desea eliminar esta cita?')) {
-      return;
-    }
+  const handleDeleteClick = () => {
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    setDeleteDialogOpen(false);
 
     const { error } = await supabase
       .from('appointments')
@@ -551,13 +564,30 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
             )}
             
             {(!isDoctor || isAdmin) && (
-              <Button onClick={handleDelete} variant="destructive" className="w-full">
+              <Button onClick={handleDeleteClick} variant="destructive" className="w-full">
                 Eliminar Cita
               </Button>
             )}
         </div>
       </SheetContent>
-      
+
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar esta cita?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Esta acción no se puede deshacer. La cita será eliminada permanentemente.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDeleteConfirm} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AppointmentDialog
         open={editDialogOpen}
         onClose={() => {

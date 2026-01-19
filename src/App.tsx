@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "next-themes";
 import { AuthProvider } from "@/hooks/useAuth";
 import { BranchProvider } from "@/hooks/useBranch";
+import { NetworkStatusProvider } from "@/hooks/useNetworkStatus";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
@@ -45,6 +46,7 @@ const App = () => (
         <BrowserRouter>
           <AuthProvider>
             <BranchProvider>
+              <NetworkStatusProvider>
               <Routes>
             <Route path="/" element={<Index />} />
             <Route path="/auth" element={<Auth />} />
@@ -155,6 +157,7 @@ const App = () => (
               {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
               <Route path="*" element={<NotFound />} />
               </Routes>
+              </NetworkStatusProvider>
             </BranchProvider>
           </AuthProvider>
         </BrowserRouter>

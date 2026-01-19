@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "./useAuth";
-import { useBranch } from "./useBranch";
+import { useBranch, isValidBranchId } from "./useBranch";
 import { isProcedureInSurgeries } from "@/lib/crmStages";
 
 type FlowCategory = 'surgeries' | 'supplies';
@@ -81,7 +81,7 @@ export function useCRMNotifications() {
       if (error) throw error;
       return data || [];
     },
-    enabled: !!user?.id && !!currentBranch?.id,
+    enabled: !!user?.id && isValidBranchId(currentBranch?.id),
     refetchInterval: 30000, // Refetch every 30 seconds
   });
 
@@ -126,12 +126,12 @@ export function useCRMNotifications() {
       if (error) throw error;
       return (data || []) as unknown as CRMActivity[];
     },
-    enabled: !!currentBranch?.id,
+    enabled: isValidBranchId(currentBranch?.id),
   });
 
   // Realtime subscription for instant badge updates
   useEffect(() => {
-    if (!currentBranch?.id) return;
+    if (!isValidBranchId(currentBranch?.id)) return;
 
     const channel = supabase
       .channel('crm-activity-changes')

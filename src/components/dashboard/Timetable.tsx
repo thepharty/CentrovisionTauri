@@ -9,8 +9,10 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/hooks/useAuth';
-import { useBranch } from '@/hooks/useBranch';
+import { useBranch, isValidBranchId } from '@/hooks/useBranch';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
+import { isTauri, saveAppointmentsToSqlite, getAppointmentsFromSqlite, AppointmentCache } from '@/lib/dataSource';
 
 interface TimetableProps {
   currentDate: Date;
@@ -37,6 +39,7 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
   const [currentTime, setCurrentTime] = useState(new Date());
   const { role } = useAuth();
   const { currentBranch } = useBranch();
+  const { isOnline } = useNetworkStatus();
 
   // Actualizar la hora cada minuto usando timezone de la clínica
   useEffect(() => {
@@ -150,7 +153,7 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
   const { data: rooms = [] } = useQuery({
     queryKey: ['rooms', role, showDiagnosticoRoom, showQuirofanoRoom, currentBranch?.id],
     staleTime: 5 * 60 * 1000, // Las salas no cambian frecuentemente - 5 minutos
-    enabled: !!currentBranch?.id,
+    enabled: isValidBranchId(currentBranch?.id),
     queryFn: async () => {
       let query = supabase
         .from('rooms')
@@ -191,84 +194,168 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
   });
 
   // Query optimizada con queryKey estable y específico
+  // Incluye write-through cache a SQLite y fallback offline
+  // NOTA: isOnline NO va en queryKey para preservar cache de React Query al cambiar estado de red
   const { data: appointments = [] } = useQuery({
     queryKey: ['appointments', format(startDate, 'yyyy-MM-dd'), format(endDate, 'yyyy-MM-dd'), doctorMode, selectedDoctorIds, showDiagnosticoRoom, showQuirofanoRoom, currentBranch?.id],
     staleTime: 15000, // Override: 15 segundos para appointments (datos críticos)
+    enabled: isValidBranchId(currentBranch?.id), // Don't run query without a valid branch
     queryFn: async () => {
       // Convertir rangos a UTC para consultar la DB
       const start = new Date(startDate);
       start.setHours(0, 0, 0, 0);
       const startUTC = fromClinicTime(start);
-      
+
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
       const endUTC = fromClinicTime(end);
 
-      // Si necesitamos incluir la sala de diagnóstico, primero obtenemos su ID
-      let diagnosticoRoomId = null;
-      if (showDiagnosticoRoom) {
-        const diagRoom = rooms.find(r => r.kind === 'diagnostico');
-        if (diagRoom) diagnosticoRoomId = diagRoom.id;
+      // Helper function para cargar desde SQLite
+      const loadFromSqlite = async (): Promise<Appointment[]> => {
+        console.log('[Timetable] Loading from SQLite cache');
+        const localAppts = await getAppointmentsFromSqlite(currentBranch!.id, format(startDate, 'yyyy-MM-dd'));
+        // Filtrar por el rango de fechas y doctores/salas
+        return localAppts.filter(apt => {
+          const aptDate = new Date(apt.starts_at);
+          const inRange = aptDate >= startUTC && aptDate <= endUTC;
+          if (!inRange) return false;
+
+          // Aplicar filtros de doctor/sala
+          if (doctorMode && selectedDoctorIds.length > 0) {
+            if (!apt.doctor_id || !selectedDoctorIds.includes(apt.doctor_id)) return false;
+          }
+          if (showDiagnosticoRoom && apt.appointment_type === 'estudio') return true;
+          if (showQuirofanoRoom && apt.appointment_type === 'cirugia') return true;
+          if (doctorMode && apt.doctor_id && selectedDoctorIds.includes(apt.doctor_id)) return true;
+
+          return !doctorMode && !showDiagnosticoRoom && !showQuirofanoRoom;
+        }) as unknown as Appointment[];
+      };
+
+      // ===== OFFLINE DETECTION =====
+      // Usamos isOnline del contexto (que usa checkNetworkStatus de Tauri, no navigator.onLine)
+      // Si estamos offline, ir directo a SQLite
+      if (!isOnline && isTauri() && currentBranch?.id) {
+        console.log('[Timetable] Offline mode detected (isOnline=false) - loading from SQLite');
+        try {
+          return await loadFromSqlite();
+        } catch (err) {
+          console.error('[Timetable] Failed to load from SQLite:', err);
+          return [];
+        }
       }
 
-      let query = supabase
-        .from('appointments')
-        .select(`
-          *,
-          patient:patients(*),
-          room:rooms(*)
-        `)
-        .gte('starts_at', startUTC.toISOString())
-        .lte('starts_at', endUTC.toISOString())
-        .eq('branch_id', currentBranch?.id)
-        .order('starts_at', { ascending: true });
+      // ===== ONLINE MODE =====
+      // Intentar cargar desde Supabase, con fallback a SQLite si falla
+      try {
+        // Si necesitamos incluir la sala de diagnóstico, primero obtenemos su ID
+        let diagnosticoRoomId = null;
+        if (showDiagnosticoRoom) {
+          const diagRoom = rooms.find(r => r.kind === 'diagnostico');
+          if (diagRoom) diagnosticoRoomId = diagRoom.id;
+        }
 
-      // Lógica combinada para doctores, diagnóstico y quirófano
-      if (doctorMode && showDiagnosticoRoom && showQuirofanoRoom) {
-        // Médicos + Diagnóstico + Quirófano
-        query = query.or(`doctor_id.in.(${selectedDoctorIds.join(',')}),type.eq.estudio,type.eq.cirugia`);
-      } else if (doctorMode && showDiagnosticoRoom) {
-        // Médicos + Diagnóstico
-        query = query.or(`doctor_id.in.(${selectedDoctorIds.join(',')}),type.eq.estudio`);
-      } else if (doctorMode && showQuirofanoRoom) {
-        // Médicos + Quirófano
-        query = query.or(`doctor_id.in.(${selectedDoctorIds.join(',')}),type.eq.cirugia`);
-      } else if (showDiagnosticoRoom && showQuirofanoRoom) {
-        // Solo Diagnóstico + Quirófano
-        query = query.in('type', ['estudio', 'cirugia']);
-      } else if (doctorMode) {
-        // Solo médicos
-        query = query.in('doctor_id', selectedDoctorIds);
-      } else if (showDiagnosticoRoom) {
-        // Solo sala de diagnóstico: mostrar TODOS los estudios (con o sin room_id)
-        query = query.eq('type', 'estudio');
-      } else if (showQuirofanoRoom) {
-        // Solo quirófano: mostrar TODAS las cirugías (con o sin room_id)
-        query = query.eq('type', 'cirugia');
+        let query = supabase
+          .from('appointments')
+          .select(`
+            *,
+            patient:patients(*),
+            room:rooms(*)
+          `)
+          .gte('starts_at', startUTC.toISOString())
+          .lte('starts_at', endUTC.toISOString())
+          .eq('branch_id', currentBranch?.id)
+          .order('starts_at', { ascending: true });
+
+        // Lógica combinada para doctores, diagnóstico y quirófano
+        if (doctorMode && showDiagnosticoRoom && showQuirofanoRoom) {
+          // Médicos + Diagnóstico + Quirófano
+          query = query.or(`doctor_id.in.(${selectedDoctorIds.join(',')}),type.eq.estudio,type.eq.cirugia`);
+        } else if (doctorMode && showDiagnosticoRoom) {
+          // Médicos + Diagnóstico
+          query = query.or(`doctor_id.in.(${selectedDoctorIds.join(',')}),type.eq.estudio`);
+        } else if (doctorMode && showQuirofanoRoom) {
+          // Médicos + Quirófano
+          query = query.or(`doctor_id.in.(${selectedDoctorIds.join(',')}),type.eq.cirugia`);
+        } else if (showDiagnosticoRoom && showQuirofanoRoom) {
+          // Solo Diagnóstico + Quirófano
+          query = query.in('type', ['estudio', 'cirugia']);
+        } else if (doctorMode) {
+          // Solo médicos
+          query = query.in('doctor_id', selectedDoctorIds);
+        } else if (showDiagnosticoRoom) {
+          // Solo sala de diagnóstico: mostrar TODOS los estudios (con o sin room_id)
+          query = query.eq('type', 'estudio');
+        } else if (showQuirofanoRoom) {
+          // Solo quirófano: mostrar TODAS las cirugías (con o sin room_id)
+          query = query.eq('type', 'cirugia');
+        }
+
+        const { data, error } = await query;
+        if (error) throw error;
+
+        // Map doctor profiles (already fetched when doctorMode)
+        const appointments = data || [];
+
+        // ===== WRITE-THROUGH CACHE =====
+        // Guardar en SQLite para uso offline (en background, no bloquea)
+        if (isTauri() && appointments.length > 0) {
+          const appointmentsToCache: AppointmentCache[] = appointments.map((apt: any) => ({
+            id: apt.id,
+            patient_id: apt.patient_id,
+            room_id: apt.room_id,
+            doctor_id: apt.doctor_id,
+            branch_id: apt.branch_id,
+            starts_at: apt.starts_at,
+            ends_at: apt.ends_at,
+            reason: apt.reason,
+            type: apt.type,
+            status: apt.status,
+            is_courtesy: apt.is_courtesy,
+            post_op_type: apt.post_op_type,
+            reception_notes: apt.reception_notes,
+            created_at: apt.created_at,
+            updated_at: apt.updated_at,
+          }));
+
+          // No await - guardar en background
+          saveAppointmentsToSqlite(appointmentsToCache).then(count => {
+            if (count > 0) {
+              console.log(`[Timetable] Cached ${count} appointments to SQLite`);
+            }
+          });
+        }
+
+        if (doctorMode) {
+          const profilesMap = new Map(doctors.map((p: any) => [p.user_id, p]));
+          return appointments.map((apt: any) => ({ ...apt, doctor: apt.doctor_id ? profilesMap.get(apt.doctor_id) : undefined })) as Appointment[];
+        }
+
+        // Fallback fetch for doctor profiles when not in doctorMode
+        const doctorIds = appointments.map((a: any) => a.doctor_id).filter(Boolean);
+        if (doctorIds.length > 0) {
+          const { data: profiles } = await supabase
+            .from('profiles')
+            .select('*')
+            .in('user_id', doctorIds);
+          const profilesMap = new Map((profiles || []).map((p: any) => [p.user_id, p]));
+          return appointments.map((apt: any) => ({ ...apt, doctor: apt.doctor_id ? profilesMap.get(apt.doctor_id) : undefined })) as Appointment[];
+        }
+
+        return appointments as Appointment[];
+      } catch (networkError) {
+        // ===== FALLBACK TO SQLITE ON NETWORK ERROR =====
+        // Si Supabase falla (probablemente offline), usar SQLite
+        if (isTauri() && currentBranch?.id) {
+          console.log('[Timetable] Supabase failed, falling back to SQLite:', networkError);
+          try {
+            return await loadFromSqlite();
+          } catch (sqliteError) {
+            console.error('[Timetable] SQLite fallback also failed:', sqliteError);
+          }
+        }
+        throw networkError;
       }
-
-      const { data, error } = await query;
-      if (error) throw error;
-
-      // Map doctor profiles (already fetched when doctorMode)
-      const appointments = data || [];
-      if (doctorMode) {
-        const profilesMap = new Map(doctors.map((p: any) => [p.user_id, p]));
-        return appointments.map((apt: any) => ({ ...apt, doctor: apt.doctor_id ? profilesMap.get(apt.doctor_id) : undefined })) as Appointment[];
-      }
-
-      // Fallback fetch for doctor profiles when not in doctorMode
-      const doctorIds = appointments.map((a: any) => a.doctor_id).filter(Boolean);
-      if (doctorIds.length > 0) {
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('*')
-          .in('user_id', doctorIds);
-        const profilesMap = new Map((profiles || []).map((p: any) => [p.user_id, p]));
-        return appointments.map((apt: any) => ({ ...apt, doctor: apt.doctor_id ? profilesMap.get(apt.doctor_id) : undefined })) as Appointment[];
-      }
-
-      return appointments as Appointment[];
     },
   });
 
@@ -320,7 +407,7 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
       if (error) throw error;
       return data || [];
     },
-    enabled: !!currentBranch?.id && !!format(startDate, 'yyyy-MM-dd') && !!format(endDate, 'yyyy-MM-dd'),
+    enabled: isValidBranchId(currentBranch?.id) && !!format(startDate, 'yyyy-MM-dd') && !!format(endDate, 'yyyy-MM-dd'),
     staleTime: 1000 * 30,
   });
 

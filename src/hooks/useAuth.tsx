@@ -3,6 +3,15 @@ import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
 import { AppRole } from '@/types/database';
 import { useNavigate } from 'react-router-dom';
+import {
+  isTauri,
+  cacheAuthSession,
+  getCachedSession,
+  clearCachedSession,
+  getCachedUser,
+  checkNetworkStatus,
+  triggerInitialSync,
+} from '@/lib/dataSource';
 
 interface AuthContextType {
   user: User | null;
@@ -11,6 +20,7 @@ interface AuthContextType {
   role: AppRole | null;
   roles: AppRole[]; // All roles for the user
   isLoggingOut: boolean;
+  isOfflineMode: boolean; // True when using cached session offline
   signIn: (email: string, password: string) => Promise<{ error: any }>;
   signUp: (email: string, password: string, fullName: string, role: AppRole) => Promise<{ error: any }>;
   signOut: () => Promise<void>;
@@ -24,6 +34,7 @@ const AuthContext = createContext<AuthContextType>({
   role: null,
   roles: [],
   isLoggingOut: false,
+  isOfflineMode: false,
   signIn: async () => ({ error: null }),
   signUp: async () => ({ error: null }),
   signOut: async () => {},
@@ -39,6 +50,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [role, setRole] = useState<AppRole | null>(null);
   const [roles, setRoles] = useState<AppRole[]>([]);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [isOfflineMode, setIsOfflineMode] = useState(false);
   const navigate = useNavigate();
 
   const hasRole = (checkRole: AppRole): boolean => roles.includes(checkRole);
@@ -85,13 +97,99 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     });
 
     // THEN check for existing session
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       console.log('[Auth Init] Session:', session?.user?.email);
-      setSession(session);
-      setUser(session?.user ?? null);
+
       if (session?.user) {
+        setSession(session);
+        setUser(session?.user ?? null);
+        setIsOfflineMode(false);
         fetchUserRoleOnce(session.user.id);
+
+        // In Tauri mode, cache the session for offline use
+        if (isTauri()) {
+          try {
+            const { data: rolesData } = await supabase
+              .from('user_roles')
+              .select('role')
+              .eq('user_id', session.user.id);
+
+            const userRoles = rolesData?.map(r => r.role) || [];
+
+            const { data: profileData } = await supabase
+              .from('profiles')
+              .select('full_name')
+              .eq('user_id', session.user.id)
+              .single();
+
+            await cacheAuthSession(
+              session.user.id,
+              session.user.email || '',
+              session.access_token,
+              session.refresh_token || '',
+              userRoles,
+              profileData?.full_name
+            );
+            console.log('[Auth] Session cached for offline use');
+
+            // Trigger initial sync to populate local SQLite database
+            try {
+              const apiKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+              if (apiKey) {
+                console.log('[Auth] Triggering initial sync...');
+                const syncResult = await triggerInitialSync(apiKey);
+                console.log('[Auth] Initial sync completed:', syncResult);
+              }
+            } catch (syncErr) {
+              console.warn('[Auth] Initial sync failed (will retry later):', syncErr);
+            }
+          } catch (err) {
+            console.warn('[Auth] Failed to cache session:', err);
+          }
+        }
       } else {
+        // No active session - check for cached session in Tauri mode
+        if (isTauri()) {
+          try {
+            const isOnline = await checkNetworkStatus();
+
+            if (!isOnline) {
+              // Offline - try to use cached session
+              const cachedUser = await getCachedUser();
+
+              if (cachedUser) {
+                console.log('[Auth] Using cached session for offline mode:', cachedUser.email);
+
+                // Create a minimal user object for offline mode
+                const offlineUser = {
+                  id: cachedUser.id,
+                  email: cachedUser.email,
+                  aud: 'authenticated',
+                  role: 'authenticated',
+                  created_at: '',
+                  app_metadata: {},
+                  user_metadata: { full_name: cachedUser.full_name },
+                } as User;
+
+                setUser(offlineUser);
+                setRoles(cachedUser.roles as AppRole[]);
+                setRole(
+                  cachedUser.roles.includes('admin')
+                    ? 'admin' as AppRole
+                    : (cachedUser.roles[0] as AppRole) || null
+                );
+                setIsOfflineMode(true);
+                setLoading(false);
+                return;
+              }
+            }
+          } catch (err) {
+            console.warn('[Auth] Failed to check cached session:', err);
+          }
+        }
+
+        setSession(null);
+        setUser(null);
         setLoading(false);
       }
     });
@@ -264,7 +362,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const signOut = async () => {
     if (isLoggingOut) return;
     setIsLoggingOut(true);
-    
+
     try {
       // Limpiar cache antes de hacer signOut
       const userId = user?.id;
@@ -273,15 +371,30 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         localStorage.removeItem(`roles_cache_${userId}`);
         localStorage.removeItem(`role_cache_timestamp_${userId}`);
       }
-      
+
+      // Clear Tauri cached session
+      if (isTauri()) {
+        try {
+          await clearCachedSession();
+          console.log('[Auth] Tauri cached session cleared');
+        } catch (err) {
+          console.warn('[Auth] Failed to clear Tauri cached session:', err);
+        }
+      }
+
       // Resetear refs
       roleFetchRef.current = { inProgress: false };
-      
-      // Intentar logout en servidor
-      const { error } = await supabase.auth.signOut();
-      
+
+      // Intentar logout en servidor (skip if offline mode)
+      let error = null;
+      if (!isOfflineMode) {
+        const result = await supabase.auth.signOut();
+        error = result.error;
+      }
+
       // Limpiar estado local siempre
       setRole(null);
+      setIsOfflineMode(false);
       setUser(null);
       setSession(null);
       
@@ -297,7 +410,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, loading, role, roles, isLoggingOut, signIn, signUp, signOut, hasRole }}>
+    <AuthContext.Provider value={{ user, session, loading, role, roles, isLoggingOut, isOfflineMode, signIn, signUp, signOut, hasRole }}>
       {children}
     </AuthContext.Provider>
   );

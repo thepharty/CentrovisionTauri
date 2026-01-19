@@ -22,7 +22,15 @@ import { PatientSearch } from './PatientSearch';
 import { DuplicatePatientDialog } from './DuplicatePatientDialog';
 import { compressImage } from '@/lib/imageCompression';
 import { useAuth } from '@/hooks/useAuth';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import { validateAxisInput } from '@/lib/axisValidation';
+import {
+  isTauri,
+  createPatient as createPatientTauri,
+  updatePatient as updatePatientTauri,
+  createAppointment as createAppointmentTauri,
+  updateAppointment as updateAppointmentTauri,
+} from '@/lib/dataSource';
 
 interface AppointmentDialogProps {
   open: boolean;
@@ -97,6 +105,7 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const { currentBranch } = useBranch();
+  const { isOnline } = useNetworkStatus();
   const [photoOD, setPhotoOD] = useState<File | null>(null);
   const [photoOI, setPhotoOI] = useState<File | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date>(initialDate || new Date());
@@ -154,25 +163,37 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
   const { data: doctors = [] } = useQuery({
     queryKey: ['doctors'],
     queryFn: async () => {
+      // Use Supabase when online, SQLite only when offline
+      if (isTauri() && !navigator.onLine) {
+        const { getDoctors } = await import('@/lib/dataSource');
+        return getDoctors();
+      }
+
       const { data: roles } = await supabase
         .from('user_roles')
         .select('user_id')
         .eq('role', 'doctor');
-      
+
       if (!roles || roles.length === 0) return [];
-      
+
       const { data: profiles } = await supabase
         .from('profiles')
         .select('*')
         .in('user_id', roles.map(r => r.user_id));
-      
+
       return profiles || [];
     },
   });
 
   const { data: rooms = [] } = useQuery({
-    queryKey: ['rooms'],
+    queryKey: ['rooms', currentBranch?.id],
     queryFn: async () => {
+      // Use Supabase when online, SQLite only when offline
+      if (isTauri() && !navigator.onLine && currentBranch?.id) {
+        const { getRooms } = await import('@/lib/dataSource');
+        return getRooms(currentBranch.id);
+      }
+
       const { data } = await supabase
         .from('rooms')
         .select('*')
@@ -370,10 +391,30 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
       // Si no hay paciente seleccionado, buscar duplicados antes de crear
       if (!selectedPatientId && !patientId) {
         // Buscar pacientes con nombre similar
-        const { data: similarPatients } = await supabase
-          .from('patients')
-          .select('*')
-          .or(`first_name.ilike.${data.patient_first_name},last_name.ilike.${data.patient_last_name}`);
+        let similarPatients: any[] = [];
+
+        // Use Supabase when online, SQLite only when offline
+        if (isTauri() && !navigator.onLine) {
+          // Offline mode: usar búsqueda local
+          const { getPatients } = await import('@/lib/dataSource');
+          const searchResults = await getPatients(data.patient_first_name, 50);
+          const searchResults2 = await getPatients(data.patient_last_name, 50);
+
+          // Combinar y deduplicar resultados
+          const combined = [...searchResults, ...searchResults2];
+          const uniqueIds = new Set<string>();
+          similarPatients = combined.filter(p => {
+            if (uniqueIds.has(p.id)) return false;
+            uniqueIds.add(p.id);
+            return true;
+          });
+        } else {
+          const { data: supabasePatients } = await supabase
+            .from('patients')
+            .select('*')
+            .or(`first_name.ilike.${data.patient_first_name},last_name.ilike.${data.patient_last_name}`);
+          similarPatients = supabasePatients || [];
+        }
 
         if (similarPatients && similarPatients.length > 0) {
           // Encontramos duplicados potenciales
@@ -398,45 +439,71 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
     try {
       setUploading(true);
       let patientId = existingPatientId || appointment?.patient_id;
-      
+
       // Si el usuario activó "Editar datos del paciente", actualizar el paciente
       if (showPatientForm) {
         if (patientId) {
           // Actualizar paciente existente
-          const { error: updateError } = await supabase
-            .from('patients')
-            .update({
-              code: data.patient_code || null,
+          if (isTauri()) {
+            await updatePatientTauri(patientId, {
               first_name: data.patient_first_name,
               last_name: data.patient_last_name,
-              dob: data.patient_dob || null,
-              address: data.patient_address || null,
-              occupation: data.patient_occupation || null,
-              phone: data.patient_phone || null,
-              email: data.patient_email || null,
-            })
-            .eq('id', patientId);
+              dob: data.patient_dob || undefined,
+              address: data.patient_address || undefined,
+              occupation: data.patient_occupation || undefined,
+              phone: data.patient_phone || undefined,
+              email: data.patient_email || undefined,
+            });
+          } else {
+            const { error: updateError } = await supabase
+              .from('patients')
+              .update({
+                code: data.patient_code || null,
+                first_name: data.patient_first_name,
+                last_name: data.patient_last_name,
+                dob: data.patient_dob || null,
+                address: data.patient_address || null,
+                occupation: data.patient_occupation || null,
+                phone: data.patient_phone || null,
+                email: data.patient_email || null,
+              })
+              .eq('id', patientId);
 
-          if (updateError) throw updateError;
+            if (updateError) throw updateError;
+          }
         } else {
           // Crear nuevo paciente
-          const { data: newPatient, error: patientError } = await supabase
-            .from('patients')
-            .insert({
-              code: data.patient_code || null,
+          // Use Supabase when online, SQLite only when offline
+          if (isTauri() && !navigator.onLine) {
+            const newPatient = await createPatientTauri({
               first_name: data.patient_first_name,
               last_name: data.patient_last_name,
-              dob: data.patient_dob || null,
-              address: data.patient_address || null,
-              occupation: data.patient_occupation || null,
-              phone: data.patient_phone || null,
-              email: data.patient_email || null,
-            })
-            .select()
-            .single();
+              dob: data.patient_dob || undefined,
+              address: data.patient_address || undefined,
+              occupation: data.patient_occupation || undefined,
+              phone: data.patient_phone || undefined,
+              email: data.patient_email || undefined,
+            });
+            patientId = newPatient.id;
+          } else {
+            const { data: newPatient, error: patientError } = await supabase
+              .from('patients')
+              .insert({
+                code: data.patient_code || null,
+                first_name: data.patient_first_name,
+                last_name: data.patient_last_name,
+                dob: data.patient_dob || null,
+                address: data.patient_address || null,
+                occupation: data.patient_occupation || null,
+                phone: data.patient_phone || null,
+                email: data.patient_email || null,
+              })
+              .select()
+              .single();
 
-          if (patientError) throw patientError;
-          patientId = newPatient.id;
+            if (patientError) throw patientError;
+            patientId = newPatient.id;
+          }
         }
       }
 
@@ -463,15 +530,23 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
       // Buscar quirófano si es doctor externo
       let externalDoctorRoomId = null;
       if (isExternalDoctor && (data.type === 'cirugia' || data.type === 'procedimiento')) {
-        const { data: quirofano } = await supabase
-          .from('rooms')
-          .select('id')
-          .eq('branch_id', currentBranch?.id)
-          .eq('kind', 'quirofano')
-          .eq('active', true)
-          .limit(1)
-          .single();
-        externalDoctorRoomId = quirofano?.id || null;
+        // Use Supabase when online, SQLite only when offline
+        if (isTauri() && !navigator.onLine && currentBranch?.id) {
+          const { getRooms } = await import('@/lib/dataSource');
+          const branchRooms = await getRooms(currentBranch.id);
+          const quirofano = branchRooms.find(r => r.kind === 'quirofano');
+          externalDoctorRoomId = quirofano?.id || null;
+        } else {
+          const { data: quirofano } = await supabase
+            .from('rooms')
+            .select('id')
+            .eq('branch_id', currentBranch?.id)
+            .eq('kind', 'quirofano')
+            .eq('active', true)
+            .limit(1)
+            .single();
+          externalDoctorRoomId = quirofano?.id || null;
+        }
       }
 
       const appointmentData = {
@@ -509,24 +584,59 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
         branch_id: currentBranch.id,
       };
 
-      if (appointment) {
-        const { error } = await supabase
-          .from('appointments')
-          .update(appointmentDataWithBranch)
-          .eq('id', appointment.id);
+      // Use Supabase when online, SQLite only when offline
+      // Usamos isOnline del contexto (checkNetworkStatus de Tauri) en lugar de navigator.onLine
+      const useLocalDB = isTauri() && !isOnline;
 
-        if (error) throw error;
+      if (appointment) {
+        // Update existing appointment
+        if (useLocalDB) {
+          await updateAppointmentTauri(appointment.id, {
+            patient_id: patientId,
+            doctor_id: isExternalDoctor ? undefined : (data.type === 'estudio' ? undefined : (data.doctor_id || undefined)),
+            room_id: isExternalDoctor ? externalDoctorRoomId || undefined : (data.room_id || undefined),
+            starts_at: appointmentDateUTC.toISOString(),
+            ends_at: endsAt.toISOString(),
+            reason: data.reason || undefined,
+            type: data.type,
+            status: 'scheduled',
+          });
+        } else {
+          const { error } = await supabase
+            .from('appointments')
+            .update(appointmentDataWithBranch)
+            .eq('id', appointment.id);
+
+          if (error) throw error;
+        }
         toast.success('Cita actualizada exitosamente');
       } else {
-        const { error } = await supabase
-          .from('appointments')
-          .insert(appointmentDataWithBranch);
+        // Create new appointment
+        if (useLocalDB) {
+          await createAppointmentTauri({
+            patient_id: patientId,
+            doctor_id: isExternalDoctor ? undefined : (data.type === 'estudio' ? undefined : (data.doctor_id || undefined)),
+            room_id: isExternalDoctor ? externalDoctorRoomId || undefined : (data.room_id || undefined),
+            branch_id: currentBranch.id,
+            starts_at: appointmentDateUTC.toISOString(),
+            ends_at: endsAt.toISOString(),
+            reason: data.reason || undefined,
+            type: data.type,
+            status: 'scheduled',
+          });
+        } else {
+          const { error } = await supabase
+            .from('appointments')
+            .insert(appointmentDataWithBranch);
 
-        if (error) throw error;
+          if (error) throw error;
+        }
         toast.success('Cita creada exitosamente');
       }
 
-      queryClient.invalidateQueries({ queryKey: ['appointments'] });
+      // Forzar refetch inmediato (no solo invalidar) para que aparezca la cita
+      // Esto es especialmente importante en modo offline donde SQLite ya tiene el dato
+      await queryClient.refetchQueries({ queryKey: ['appointments'] });
       reset();
       onClose();
     } catch (error: any) {

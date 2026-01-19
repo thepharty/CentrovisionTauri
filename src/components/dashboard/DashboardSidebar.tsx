@@ -1,4 +1,4 @@
-import { Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarMenu, SidebarMenuItem } from '@/components/ui/sidebar';
+import { Sidebar, SidebarContent, SidebarHeader, SidebarMenu, SidebarMenuItem } from '@/components/ui/sidebar';
 import { Calendar } from '@/components/ui/calendar';
 import { Shield, DollarSign, ChevronDown, Users, Package } from 'lucide-react';
 import centrovisionLogo from '@/assets/centrovision-logo.png';
@@ -10,7 +10,7 @@ import { Appointment } from '@/types/database';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/useAuth';
-import { useBranch } from '@/hooks/useBranch';
+import { useBranch, isValidBranchId } from '@/hooks/useBranch';
 import { useNavigate } from 'react-router-dom';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -51,6 +51,8 @@ export function DashboardSidebar({
   const { currentBranch } = useBranch();
   const navigate = useNavigate();
   const { theme, setTheme } = useTheme();
+  const [calendarOpen, setCalendarOpen] = useState(true);
+  const [medicosOpen, setMedicosOpen] = useState(true);
   const [diagnosticoOpen, setDiagnosticoOpen] = useState(true);
   const [quirofanoOpen, setQuirofanoOpen] = useState(true);
   const [clickTimeout, setClickTimeout] = useState<ReturnType<typeof setTimeout> | null>(null);
@@ -119,7 +121,7 @@ export function DashboardSidebar({
       } = await supabase.from('rooms').select('*').eq('kind', 'diagnostico').eq('branch_id', currentBranch.id).eq('active', true).maybeSingle();
       return data;
     },
-    enabled: !!currentBranch?.id
+    enabled: isValidBranchId(currentBranch?.id)
   });
   const {
     data: quirofanoRoom
@@ -132,7 +134,7 @@ export function DashboardSidebar({
       } = await supabase.from('rooms').select('*').eq('kind', 'quirofano').eq('branch_id', currentBranch.id).eq('active', true).maybeSingle();
       return data;
     },
-    enabled: !!currentBranch?.id
+    enabled: isValidBranchId(currentBranch?.id)
   });
   const toggleDoctor = (id: string) => {
     if (!onDoctorsChange) return;
@@ -239,22 +241,28 @@ export function DashboardSidebar({
       </SidebarHeader>
 
       <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Calendario</SidebarGroupLabel>
-          <SidebarGroupContent>
+        <Collapsible open={calendarOpen} onOpenChange={setCalendarOpen}>
+          <CollapsibleTrigger className="flex items-center justify-between w-full px-4 py-3 text-sm font-medium hover:bg-muted/50 transition-colors">
+            <span>Calendario</span>
+            <ChevronDown className={cn("h-4 w-4 transition-transform duration-200", calendarOpen && "rotate-180")} />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="px-2 pb-3">
             <Calendar mode="single" selected={currentDate} onSelect={date => date && onDateChange(date)} className="rounded-md border w-full overflow-hidden" />
-          </SidebarGroupContent>
-        </SidebarGroup>
+          </CollapsibleContent>
+        </Collapsible>
 
-        <SidebarGroup>
-          <SidebarGroupLabel>
-            Médicos
-            <Badge variant="secondary" className="ml-2">
-              {doctors.length}
-            </Badge>
-          </SidebarGroupLabel>
-          <SidebarGroupContent>
-            <ScrollArea className="h-[360px] pr-2">
+        <Collapsible open={medicosOpen} onOpenChange={setMedicosOpen}>
+          <CollapsibleTrigger className="flex items-center justify-between w-full px-4 py-3 text-sm font-medium hover:bg-muted/50 transition-colors">
+            <div className="flex items-center gap-2">
+              <span>Médicos</span>
+              <Badge variant="secondary">
+                {doctors.length}
+              </Badge>
+            </div>
+            <ChevronDown className={cn("h-4 w-4 transition-transform duration-200", medicosOpen && "rotate-180")} />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="px-4 pb-3">
+            <ScrollArea className="h-[300px] pr-2">
               <SidebarMenu>
                 {doctors.map(doc => <SidebarMenuItem key={doc.user_id} className="flex items-center gap-2 py-2">
                     <Checkbox id={`doc-${doc.user_id}`} checked={selectedDoctorIds.includes(doc.user_id)} onCheckedChange={() => toggleDoctor(doc.user_id)} disabled={hasRole('doctor') && doc.user_id === user?.id} />
@@ -265,10 +273,10 @@ export function DashboardSidebar({
                 {doctors.length === 0 && <div className="p-4 text-center text-sm text-muted-foreground">No hay médicos registrados</div>}
               </SidebarMenu>
             </ScrollArea>
-          </SidebarGroupContent>
-        </SidebarGroup>
+          </CollapsibleContent>
+        </Collapsible>
 
-        {diagnosticoRoom && <Collapsible open={diagnosticoOpen} onOpenChange={setDiagnosticoOpen} className="border-b">
+        {diagnosticoRoom && <Collapsible open={diagnosticoOpen} onOpenChange={setDiagnosticoOpen}>
             <CollapsibleTrigger className="flex items-center justify-between w-full px-4 py-3 text-sm font-medium hover:bg-muted/50 transition-colors">
               <span>Diagnóstico</span>
               <ChevronDown className={cn("h-4 w-4 transition-transform duration-200", diagnosticoOpen && "rotate-180")} />
@@ -283,7 +291,7 @@ export function DashboardSidebar({
             </CollapsibleContent>
           </Collapsible>}
 
-        {quirofanoRoom && <Collapsible open={quirofanoOpen} onOpenChange={setQuirofanoOpen} className="border-b">
+        {quirofanoRoom && <Collapsible open={quirofanoOpen} onOpenChange={setQuirofanoOpen}>
             <CollapsibleTrigger className="flex items-center justify-between w-full px-4 py-3 text-sm font-medium hover:bg-muted/50 transition-colors">
               <span>Alquiler de Sala</span>
               <ChevronDown className={cn("h-4 w-4 transition-transform duration-200", quirofanoOpen && "rotate-180")} />

@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
-import { Check, ChevronsUpDown, Search } from 'lucide-react';
+import { Check, ChevronsUpDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
@@ -17,6 +17,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
+import { isTauri, getPatients as getPatientsTauri } from '@/lib/dataSource';
 
 interface Patient {
   id: string;
@@ -43,19 +44,30 @@ export function PatientSearch({ selectedPatientId, onSelectPatient, onClearSelec
   const { data: patients = [], isLoading } = useQuery({
     queryKey: ['patients-search', searchTerm],
     queryFn: async () => {
-      let query = supabase
-        .from('patients')
-        .select('*');
+      // Try Supabase first (works when online), fallback to local SQLite
+      if (navigator.onLine || !isTauri()) {
+        let query = supabase
+          .from('patients')
+          .select('*');
 
-      if (searchTerm) {
-        query = query.or(`first_name.ilike.%${searchTerm}%,last_name.ilike.%${searchTerm}%,code.ilike.%${searchTerm}%`);
+        if (searchTerm) {
+          query = query.or(`first_name.ilike.%${searchTerm}%,last_name.ilike.%${searchTerm}%,code.ilike.%${searchTerm}%`);
+        }
+
+        query = query.order('last_name', { ascending: true });
+
+        const { data, error } = await query.limit(50);
+        if (error) throw error;
+        return data as Patient[];
       }
 
-      query = query.order('last_name', { ascending: true });
+      // Offline mode: use local SQLite
+      if (isTauri()) {
+        const results = await getPatientsTauri(searchTerm || undefined, 50);
+        return results as Patient[];
+      }
 
-      const { data, error } = await query.limit(50);
-      if (error) throw error;
-      return data as Patient[];
+      return [];
     },
     enabled: open || !!searchTerm,
   });

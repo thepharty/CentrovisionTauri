@@ -4,7 +4,7 @@ import { supabase } from '@/integrations/supabase/client';
 
 interface Branch {
   id: string;
-  code: 'central' | 'santa_lucia';
+  code: string;
   name: string;
   address?: string;
   phone?: string;
@@ -27,6 +27,11 @@ const BranchContext = createContext<BranchContextType>({
 
 export const useBranch = () => useContext(BranchContext);
 
+// Helper to check if a branch ID is valid (non-null/undefined)
+export const isValidBranchId = (branchId: string | null | undefined): branchId is string => {
+  return !!branchId;
+};
+
 export const BranchProvider = ({ children }: { children: ReactNode }) => {
   const [currentBranch, setCurrentBranchState] = useState<Branch | null>(null);
   const queryClient = useQueryClient();
@@ -41,7 +46,7 @@ export const BranchProvider = ({ children }: { children: ReactNode }) => {
         .eq('active', true)
         .order('code');
       if (error) throw error;
-      return data as Branch[];
+      return (data || []) as Branch[];
     },
   });
 
@@ -55,14 +60,18 @@ export const BranchProvider = ({ children }: { children: ReactNode }) => {
       if (saved) {
         setCurrentBranchState(saved);
         return;
+      } else {
+        // Invalid branch ID in localStorage, remove it
+        console.warn('[Branch] Invalid branch ID in localStorage, clearing:', savedBranchId);
+        localStorage.removeItem('current-branch-id');
       }
     }
 
-    // Default to Central
-    const central = branches.find(b => b.code === 'central');
-    if (central) {
-      setCurrentBranchState(central);
-      localStorage.setItem('current-branch-id', central.id);
+    // Default to first branch (VY or whatever is first)
+    const defaultBranch = branches.find(b => b.code === 'VY') || branches[0];
+    if (defaultBranch) {
+      setCurrentBranchState(defaultBranch);
+      localStorage.setItem('current-branch-id', defaultBranch.id);
     }
   }, [branches]);
 
