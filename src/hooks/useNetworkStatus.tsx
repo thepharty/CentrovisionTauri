@@ -122,8 +122,14 @@ export const NetworkStatusProvider = ({ children }: { children: ReactNode }) => 
   useEffect(() => {
     const handleOnline = async () => {
       setIsOnline(true);
-      await refreshStatus();
-      // Auto-sync when coming back online
+      await refreshStatus(); // Detecta el modo real: supabase, local, u offline
+
+      // SIEMPRE invalidar queries para refrescar datos de la fuente correcta
+      // (puede ser Supabase si hay internet, o PostgreSQL local si solo hay WiFi)
+      queryClient.invalidateQueries({ queryKey: ['appointments'] });
+      queryClient.invalidateQueries({ queryKey: ['patients'] });
+
+      // Auto-sync pendientes cuando hay conexión a Supabase
       if (isTauri()) {
         triggerSync();
       }
