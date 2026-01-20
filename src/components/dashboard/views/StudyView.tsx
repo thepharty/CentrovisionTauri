@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { FileImage, Video, Download } from 'lucide-react';
 import { useState, useEffect } from 'react';
+import { PdfThumbnail } from '@/components/pdf/PdfThumbnail';
 
 interface StudyViewProps {
   encounterId?: string;
@@ -130,6 +131,21 @@ export function StudyView({ encounterId, appointmentId }: StudyViewProps) {
     return colors[eye] || 'bg-muted';
   };
 
+  const getFileType = (file: any): 'image' | 'video' | 'pdf' | 'other' => {
+    // Primero intentar por mime_type
+    if (file.mime_type?.startsWith('image/')) return 'image';
+    if (file.mime_type?.startsWith('video/')) return 'video';
+    if (file.mime_type === 'application/pdf') return 'pdf';
+
+    // Fallback: detectar por extensión del archivo
+    const ext = file.file_path?.split('.').pop()?.toLowerCase();
+    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext)) return 'image';
+    if (['mp4', 'mov', 'avi', 'webm'].includes(ext)) return 'video';
+    if (ext === 'pdf') return 'pdf';
+
+    return 'other';
+  };
+
   const handleDownload = async (url: string, fileName: string) => {
     try {
       // Fetch el archivo como blob para poder descargarlo (cross-origin)
@@ -187,25 +203,46 @@ export function StudyView({ encounterId, appointmentId }: StudyViewProps) {
                 key={file.id}
                 className="relative border rounded-lg overflow-hidden hover:shadow-md transition-shadow group"
               >
-                {file.mime_type?.startsWith('image/') ? (
-                  <img
-                    src={file.signedUrl || ''}
-                    alt="Estudio"
-                    className="w-full h-32 object-cover"
-                  />
-                ) : file.mime_type?.startsWith('video/') ? (
-                  <div className="relative w-full h-32 bg-muted flex items-center justify-center">
-                    <Video className="h-12 w-12 text-muted-foreground" />
-                    <video
-                      src={file.signedUrl || ''}
-                      className="absolute inset-0 w-full h-full object-cover opacity-50"
-                    />
-                  </div>
-                ) : (
-                  <div className="w-full h-32 bg-muted flex items-center justify-center">
-                    <FileImage className="h-12 w-12 text-muted-foreground" />
-                  </div>
-                )}
+                {(() => {
+                  const fileType = getFileType(file);
+
+                  if (fileType === 'image') {
+                    return (
+                      <img
+                        src={file.signedUrl || ''}
+                        alt="Estudio"
+                        className="w-full h-32 object-cover"
+                      />
+                    );
+                  }
+
+                  if (fileType === 'video') {
+                    return (
+                      <div className="relative w-full h-32 bg-muted flex items-center justify-center">
+                        <Video className="h-12 w-12 text-muted-foreground" />
+                        <video
+                          src={file.signedUrl || ''}
+                          className="absolute inset-0 w-full h-full object-cover opacity-50"
+                        />
+                      </div>
+                    );
+                  }
+
+                  if (fileType === 'pdf') {
+                    return (
+                      <PdfThumbnail
+                        src={file.signedUrl || ''}
+                        className="w-full h-32"
+                      />
+                    );
+                  }
+
+                  return (
+                    <div className="w-full h-32 bg-muted flex items-center justify-center">
+                      <FileImage className="h-12 w-12 text-muted-foreground" />
+                    </div>
+                  );
+                })()}
                 <div className="p-2 bg-card flex items-center justify-between">
                   <span className="text-xs truncate flex-1">
                     {file.file_path.split('/').pop()}
