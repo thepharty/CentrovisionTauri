@@ -522,12 +522,37 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
     // dateStr is "YYYY-MM-DD", we need to create a Date object representing
     // that date and time in Guatemala timezone
     const [year, month, dayNum] = dateStr.split('-').map(Number);
+    const targetDay = new Date(year, month - 1, dayNum);
+
+    // Validar máximo 2 citas en el slot destino
+    // Determinar si es columna de doctor basándose en si el colId coincide con algún doctor seleccionado
+    const isTargetDoctor = selectedDoctorIds.includes(colId);
+    const targetAppointments = appointments.filter(apt => {
+      const aptDate = toClinicTime(new Date(apt.starts_at));
+      const aptHour = aptDate.getHours();
+      const aptMinutes = aptDate.getMinutes();
+      const isSameDay = format(aptDate, 'yyyy-MM-dd') === format(targetDay, 'yyyy-MM-dd');
+
+      if (isTargetDoctor) {
+        return apt.doctor_id === colId && isSameDay && aptHour === hour && aptMinutes === minutes;
+      }
+      return apt.room_id === colId && isSameDay && aptHour === hour && aptMinutes === minutes;
+    });
+
+    // Verificar si la cita que estamos moviendo ya está en este slot
+    const isMovingSameSlot = targetAppointments.some(apt => apt.id === appointmentId);
+
+    if (targetAppointments.length >= 2 && !isMovingSameSlot) {
+      toast.error('Este horario ya tiene 2 citas. No se pueden agendar más.');
+      return;
+    }
+
     const clinicLocalTime = new Date(year, month - 1, dayNum, hour, minutes, 0, 0);
     const newStartTime = fromClinicTime(clinicLocalTime);
 
     console.log('[Timetable] Moving appointment:', { appointmentId, clinicLocalTime, newStartTime: newStartTime.toISOString(), colId });
     updateAppointmentTimeMutation.mutate({ appointmentId, newStartTime });
-  }, [updateAppointmentTimeMutation]);
+  }, [updateAppointmentTimeMutation, appointments, selectedDoctorIds]);
 
   // Get the active appointment for DragOverlay
   const activeAppointment = activeDragId ? appointments.find(apt => apt.id === activeDragId) : null;
@@ -752,16 +777,27 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
                         );
                       })}
 
-                      {/* Renderizar appointments después (encima) */}
-                      {getAppointmentsForSlot(colId, day, hour, minutes, isDoctor, !isDoctor ? col.kind : undefined).map((apt) => (
-                        <DraggableAppointmentBlock
-                          key={apt.id}
-                          appointment={apt}
-                          onClick={() => onAppointmentClick(apt)}
-                          onDoubleClick={onAppointmentDoubleClick}
-                          onNoteClick={onAppointmentNoteClick}
-                        />
-                      ))}
+                      {/* Renderizar appointments después (encima) - Layout 50%/50% si hay 2 citas */}
+                      {(() => {
+                        const slotAppointments = getAppointmentsForSlot(colId, day, hour, minutes, isDoctor, !isDoctor ? col.kind : undefined);
+                        const count = slotAppointments.length;
+
+                        return (
+                          <div className={count === 2 ? 'flex flex-row gap-0.5 w-full' : ''}>
+                            {slotAppointments.map((apt) => (
+                              <div key={apt.id} style={{ width: count === 2 ? '50%' : '100%' }}>
+                                <DraggableAppointmentBlock
+                                  appointment={apt}
+                                  compact={count === 2}
+                                  onClick={() => onAppointmentClick(apt)}
+                                  onDoubleClick={onAppointmentDoubleClick}
+                                  onNoteClick={onAppointmentNoteClick}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
                     </DroppableSlot>
                   );
                 })

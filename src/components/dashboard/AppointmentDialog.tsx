@@ -588,6 +588,36 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
       // Usamos isOnline del contexto (checkNetworkStatus de Tauri) en lugar de navigator.onLine
       const useLocalDB = isTauri() && !isOnline;
 
+      // Validar máximo 2 citas en el mismo slot (solo para creación o si cambia el horario)
+      const isNewAppointment = !appointment;
+      const isTimeChanged = appointment && (
+        appointmentDateUTC.toISOString() !== appointment.starts_at ||
+        appointmentData.doctor_id !== appointment.doctor_id
+      );
+
+      if (isNewAppointment || isTimeChanged) {
+        // Calcular inicio y fin del slot de 15 minutos
+        const slotStart = appointmentDateUTC.toISOString();
+        const slotEnd = addMinutes(appointmentDateUTC, 15).toISOString();
+
+        // Buscar citas existentes en el mismo slot y doctor
+        const { data: existingAppointments, error: checkError } = await supabase
+          .from('appointments')
+          .select('id')
+          .eq('doctor_id', appointmentData.doctor_id)
+          .gte('starts_at', slotStart)
+          .lt('starts_at', slotEnd)
+          .neq('id', appointment?.id || '00000000-0000-0000-0000-000000000000');
+
+        if (checkError) {
+          console.error('Error checking slot availability:', checkError);
+        } else if (existingAppointments && existingAppointments.length >= 2) {
+          toast.error('Este horario ya tiene 2 citas. Seleccione otro horario.');
+          setUploading(false);
+          return;
+        }
+      }
+
       if (appointment) {
         // Update existing appointment
         if (useLocalDB) {

@@ -15,6 +15,7 @@ interface DraggableAppointmentBlockProps {
   onClick: (appointment: Appointment) => void;
   onDoubleClick?: (appointment: Appointment) => void;
   onNoteClick?: (appointment: Appointment) => void;
+  compact?: boolean; // Modo compacto para cuando hay 2 citas lado a lado
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -41,7 +42,7 @@ const TYPE_LABELS: Record<string, string> = {
   estudio: 'Estudio',
 };
 
-export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick, onNoteClick }: DraggableAppointmentBlockProps) {
+export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick, onNoteClick, compact = false }: DraggableAppointmentBlockProps) {
   const [isResizing, setIsResizing] = useState(false);
   const [resizeDirection, setResizeDirection] = useState<'top' | 'bottom' | null>(null);
   const [tempHeight, setTempHeight] = useState<number | null>(null);
@@ -253,15 +254,18 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
               {/* FILA 1: Nombre del paciente + Badge cortesía + Doctor externo + Icono de nota */}
               <div className="flex items-center justify-between gap-1 leading-tight">
                 <div className="flex items-center gap-1 flex-1 min-w-0">
-                  <span className="text-base font-medium truncate">
-                    {appointment.patient?.first_name} {appointment.patient?.last_name}
+                  <span className={`font-medium truncate ${compact ? 'text-sm' : 'text-base'}`}>
+                    {compact
+                      ? `${appointment.patient?.first_name?.charAt(0)}. ${appointment.patient?.last_name}`
+                      : `${appointment.patient?.first_name} ${appointment.patient?.last_name}`
+                    }
                   </span>
-                  {(appointment as any).external_doctor_name && (
+                  {!compact && (appointment as any).external_doctor_name && (
                     <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4 bg-orange-100 text-orange-700 border-orange-300">
                       🏥 {(appointment as any).external_doctor_name}
                     </Badge>
                   )}
-                  {appointment.is_courtesy && (
+                  {!compact && appointment.is_courtesy && (
                     <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4 bg-purple-100 text-purple-700 border-purple-300">
                       <Gift className="h-3 w-3 mr-0.5" />
                       Cortesía
@@ -282,7 +286,7 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
                   }
                 >
                   <StickyNote
-                    className={`h-4 w-4 ${
+                    className={`${compact ? 'h-3 w-3' : 'h-4 w-4'} ${
                       appointment.reception_notes
                         ? 'text-amber-500'
                         : 'text-gray-300'
@@ -293,24 +297,24 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
 
               {/* FILA 2: Tipo de cita + Status + Iconos de estado */}
               <div className="flex items-center justify-between gap-2">
-                <div className="text-muted-foreground text-sm leading-tight flex-1">
-                  {truncatedTypeLabel}
+                <div className={`text-muted-foreground leading-tight flex-1 ${compact ? 'text-xs' : 'text-sm'}`}>
+                  {compact ? TYPE_LABELS[appointment.type] || appointment.type : truncatedTypeLabel}
                 </div>
 
                 {/* Iconos de estado - en la fila inferior a la derecha */}
                 <div className="flex items-center gap-1 flex-shrink-0">
                   {appointment.status === 'checked_in' && (
                     <div title="Paciente en sala de espera">
-                      <Armchair className="h-4 w-4 text-blue-600" />
+                      <Armchair className={`${compact ? 'h-3 w-3' : 'h-4 w-4'} text-blue-600`} />
                     </div>
                   )}
                   {appointment.status === 'preconsulta_ready' && (
                     <div title="Preconsulta lista - Listo para atender">
-                      <UserCheck className="h-4 w-4 text-green-600" />
+                      <UserCheck className={`${compact ? 'h-3 w-3' : 'h-4 w-4'} text-green-600`} />
                     </div>
                   )}
                   {appointment.status === 'done' && (
-                    <div className="text-sm text-green-600 leading-tight">✓ Atendida</div>
+                    <div className={`text-green-600 leading-tight ${compact ? 'text-xs' : 'text-sm'}`}>✓</div>
                   )}
                 </div>
               </div>
