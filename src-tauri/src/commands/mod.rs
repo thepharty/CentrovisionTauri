@@ -94,6 +94,8 @@ pub struct SyncStatus {
 pub async fn get_connection_status(
     app_state: State<'_, Arc<AppState>>,
 ) -> Result<ConnectionStatus, String> {
+    // Re-check connections before returning status
+    app_state.connection_manager.check_connections().await;
     Ok(app_state.connection_manager.get_status().await)
 }
 

@@ -145,7 +145,7 @@ export const NetworkStatusProvider = ({ children }: { children: ReactNode }) => 
     };
   }, [refreshStatus, syncStatus, triggerSync]);
 
-  // Periodic status check and auto-sync (every 30 seconds in Tauri mode)
+  // Periodic status check and auto-sync (every 10 seconds in Tauri mode)
   useEffect(() => {
     if (!isTauri()) return;
 
@@ -155,7 +155,7 @@ export const NetworkStatusProvider = ({ children }: { children: ReactNode }) => 
       if (isOnline && syncStatus && syncStatus.pending_changes > 0) {
         triggerSync();
       }
-    }, 30000);
+    }, 10000);
 
     return () => clearInterval(interval);
   }, [refreshStatus, triggerSync, isOnline, syncStatus]);
