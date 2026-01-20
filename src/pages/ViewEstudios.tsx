@@ -1,13 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Maximize2, Minimize2, ChevronLeft, ChevronRight, X, PanelLeftClose, PanelLeftOpen, FileText, Download, Printer } from 'lucide-react';
+import { ArrowLeft, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen, Printer, Maximize } from 'lucide-react';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { PdfViewer } from '@/components/pdf/PdfViewer';
 import { PdfThumbnail } from '@/components/pdf/PdfThumbnail';
 
@@ -38,9 +37,15 @@ export default function ViewEstudios() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [selectedStudy, setSelectedStudy] = useState<Study | null>(null);
-  const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
-  const [viewMode, setViewMode] = useState<'fit' | 'full'>('fit');
+  const [selectedFileIndex, setSelectedFileIndex] = useState<number>(0);
+  const [zoom, setZoom] = useState(1);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isPanning, setIsPanning] = useState(false);
+  const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
+  const lastPanPosition = useRef({ x: 0, y: 0 });
+  const mainViewerRef = useRef<HTMLDivElement>(null);
+  const filmstripRef = useRef<HTMLDivElement>(null);
 
   // Cargar estudios del paciente
   const { data: studies, isLoading: loadingStudies } = useQuery({
@@ -62,9 +67,9 @@ export default function ViewEstudios() {
               const { data: signedData } = await supabase.storage
                 .from('studies')
                 .createSignedUrl(file.file_path, 3600);
-              
-              return { 
-                ...file, 
+
+              return {
+                ...file,
                 signedUrl: signedData?.signedUrl || ''
               };
             })
@@ -94,119 +99,154 @@ export default function ViewEstudios() {
     enabled: !!patientId,
   });
 
-  // Seleccionar el primer estudio automáticamente si hay estudios disponibles
+  const viewableFiles = selectedStudy?.study_files.filter((f) =>
+    f.mime_type?.startsWith('image/') || f.mime_type === 'application/pdf'
+  ) || [];
+
+  const currentFile = viewableFiles[selectedFileIndex];
+
+  // Seleccionar el primer estudio automáticamente
   useEffect(() => {
     if (studies && studies.length > 0 && !selectedStudy) {
       setSelectedStudy(studies[0]);
+      setSelectedFileIndex(0);
     }
   }, [studies, selectedStudy]);
 
-
-  // Reset viewMode cuando se cierra el modal
+  // Reset zoom y pan cuando cambia el archivo
   useEffect(() => {
-    if (selectedImageIndex === null) {
-      setViewMode('fit');
+    setZoom(1);
+    setPanPosition({ x: 0, y: 0 });
+  }, [selectedFileIndex, selectedStudy]);
+
+  // Scroll filmstrip para mostrar el thumbnail seleccionado
+  useEffect(() => {
+    if (filmstripRef.current && viewableFiles.length > 0) {
+      const thumbnail = filmstripRef.current.children[selectedFileIndex] as HTMLElement;
+      if (thumbnail) {
+        thumbnail.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      }
     }
-  }, [selectedImageIndex]);
+  }, [selectedFileIndex, viewableFiles.length]);
 
   // Navegación con teclado
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (selectedImageIndex === null) return;
+      if (viewableFiles.length === 0) return;
 
-      const viewFiles = selectedStudy?.study_files.filter((f) =>
-        f.mime_type?.startsWith('image/') || f.mime_type === 'application/pdf'
-      ) || [];
-
-      if (e.key === 'ArrowLeft' && selectedImageIndex > 0) {
-        setSelectedImageIndex(selectedImageIndex - 1);
-        setViewMode('fit');
-      } else if (e.key === 'ArrowRight' && selectedImageIndex < viewFiles.length - 1) {
-        setSelectedImageIndex(selectedImageIndex + 1);
-        setViewMode('fit');
-      } else if (e.key === 'Escape') {
-        setSelectedImageIndex(null);
-        setViewMode('fit');
+      if (e.key === 'ArrowLeft' && selectedFileIndex > 0) {
+        setSelectedFileIndex(selectedFileIndex - 1);
+      } else if (e.key === 'ArrowRight' && selectedFileIndex < viewableFiles.length - 1) {
+        setSelectedFileIndex(selectedFileIndex + 1);
+      } else if (e.key === 'Escape' && isFullscreen) {
+        document.exitFullscreen();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedImageIndex, selectedStudy]);
+  }, [selectedFileIndex, viewableFiles.length, isFullscreen]);
+
+  // Detectar cambios de fullscreen
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
 
   const handleStudySelect = (study: Study) => {
     setSelectedStudy(study);
-    setSelectedImageIndex(null);
-    setViewMode('fit');
+    setSelectedFileIndex(0);
+    setZoom(1);
+    setPanPosition({ x: 0, y: 0 });
     navigate(`/ver-estudios/${study.patient_id}`);
   };
 
-  const handleImageClick = (index: number) => {
-    setSelectedImageIndex(index);
-    setViewMode('fit');
+  const handleZoomIn = () => setZoom((prev) => Math.min(prev + 0.25, 3));
+  const handleZoomOut = () => {
+    setZoom((prev) => {
+      const newZoom = Math.max(prev - 0.25, 0.5);
+      if (newZoom <= 1) setPanPosition({ x: 0, y: 0 });
+      return newZoom;
+    });
   };
 
-  const toggleViewMode = () => {
-    setViewMode(prev => prev === 'fit' ? 'full' : 'fit');
-  };
-
-  const handlePrintPdf = () => {
-    if (selectedImageIndex !== null && viewableFiles[selectedImageIndex]) {
-      const url = viewableFiles[selectedImageIndex].signedUrl;
-      window.open(url, '_blank');
+  const handlePrevFile = () => {
+    if (selectedFileIndex > 0) {
+      setSelectedFileIndex(selectedFileIndex - 1);
     }
   };
 
-  const handlePrintImage = () => {
-    if (selectedImageIndex !== null && viewableFiles[selectedImageIndex]) {
+  const handleNextFile = () => {
+    if (selectedFileIndex < viewableFiles.length - 1) {
+      setSelectedFileIndex(selectedFileIndex + 1);
+    }
+  };
+
+  const handleFullscreen = () => {
+    if (mainViewerRef.current) {
+      if (!document.fullscreenElement) {
+        mainViewerRef.current.requestFullscreen();
+      } else {
+        document.exitFullscreen();
+      }
+    }
+  };
+
+  // Pan handlers para imágenes con zoom
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (zoom <= 1 || currentFile?.mime_type === 'application/pdf') return;
+    e.preventDefault();
+    setIsPanning(true);
+    lastPanPosition.current = { x: e.clientX, y: e.clientY };
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isPanning || zoom <= 1) return;
+    const deltaX = e.clientX - lastPanPosition.current.x;
+    const deltaY = e.clientY - lastPanPosition.current.y;
+    setPanPosition((prev) => ({
+      x: prev.x + deltaX,
+      y: prev.y + deltaY,
+    }));
+    lastPanPosition.current = { x: e.clientX, y: e.clientY };
+  };
+
+  const handleMouseUp = () => setIsPanning(false);
+  const handleMouseLeave = () => setIsPanning(false);
+
+  // Imprimir
+  const handlePrint = () => {
+    if (!currentFile) return;
+
+    if (currentFile.mime_type === 'application/pdf') {
+      window.open(currentFile.signedUrl, '_blank');
+    } else if (currentFile.mime_type?.startsWith('image/')) {
       const printWindow = window.open('', '_blank');
-      const img = viewableFiles[selectedImageIndex].signedUrl;
       const studyTitle = selectedStudy?.title || 'Estudio';
-      const patientName = selectedStudy?.patient 
-        ? `${selectedStudy.patient.first_name} ${selectedStudy.patient.last_name}` 
+      const patientName = selectedStudy?.patient
+        ? `${selectedStudy.patient.first_name} ${selectedStudy.patient.last_name}`
         : '';
-      
+
       printWindow?.document.write(`
         <!DOCTYPE html>
         <html>
           <head>
             <title>Imprimir ${studyTitle}</title>
             <style>
-              body { 
-                margin: 0; 
-                padding: 20px;
-                font-family: system-ui, -apple-system, sans-serif;
-              }
-              .header {
-                text-align: center;
-                margin-bottom: 20px;
-              }
-              .header h1 {
-                margin: 0;
-                font-size: 24px;
-              }
-              .header p {
-                margin: 5px 0;
-                color: #666;
-              }
-              .image-container {
-                display: flex;
-                justify-content: center;
-                align-items: center;
-              }
-              img { 
-                max-width: 100%; 
-                height: auto;
-              }
+              body { margin: 0; padding: 20px; font-family: system-ui, -apple-system, sans-serif; }
+              .header { text-align: center; margin-bottom: 20px; }
+              .header h1 { margin: 0; font-size: 24px; }
+              .header p { margin: 5px 0; color: #666; }
+              .image-container { display: flex; justify-content: center; align-items: center; }
+              img { max-width: 100%; height: auto; }
               @media print {
-                body { 
-                  margin: 0;
-                  padding: 10px;
-                }
-                img { 
-                  max-width: 100%; 
-                  page-break-inside: avoid; 
-                }
+                body { margin: 0; padding: 10px; }
+                img { max-width: 100%; page-break-inside: avoid; }
               }
             </style>
           </head>
@@ -217,7 +257,7 @@ export default function ViewEstudios() {
               <p>Ojo: ${selectedStudy?.eye_side || ''} - ${format(new Date(selectedStudy?.created_at || ''), "d 'de' MMMM, yyyy", { locale: es })}</p>
             </div>
             <div class="image-container">
-              <img src="${img}" onload="window.print(); window.onafterprint = function() { window.close(); }" />
+              <img src="${currentFile.signedUrl}" onload="window.print(); window.onafterprint = function() { window.close(); }" />
             </div>
           </body>
         </html>
@@ -225,21 +265,6 @@ export default function ViewEstudios() {
       printWindow?.document.close();
     }
   };
-
-  const handlePrint = () => {
-    if (selectedImageIndex !== null && viewableFiles[selectedImageIndex]) {
-      const file = viewableFiles[selectedImageIndex];
-      if (file.mime_type === 'application/pdf') {
-        handlePrintPdf();
-      } else if (file.mime_type?.startsWith('image/')) {
-        handlePrintImage();
-      }
-    }
-  };
-
-  const viewableFiles = selectedStudy?.study_files.filter((f) =>
-    f.mime_type?.startsWith('image/') || f.mime_type === 'application/pdf'
-  ) || [];
 
   if (loadingStudies) {
     return (
@@ -250,9 +275,9 @@ export default function ViewEstudios() {
   }
 
   return (
-    <div className="min-h-screen bg-background flex">
+    <div className="h-screen bg-background flex overflow-hidden">
       {/* Sidebar */}
-      <div className={`border-r border-border bg-card transition-all duration-300 ${sidebarCollapsed ? 'w-0 overflow-hidden' : 'w-80'}`}>
+      <div className={`border-r border-border bg-card transition-all duration-300 flex-shrink-0 ${sidebarCollapsed ? 'w-0 overflow-hidden' : 'w-80'}`}>
         <div className="p-4 border-b border-border">
           <div className="flex items-center justify-between mb-4">
             <Button
@@ -260,7 +285,7 @@ export default function ViewEstudios() {
               onClick={() => {
                 const returnTo = searchParams.get('returnTo');
                 const returnEncounterId = searchParams.get('encounterId');
-                
+
                 if (returnTo && returnEncounterId) {
                   navigate(`/${returnTo}/${returnEncounterId}`);
                 } else if (returnTo) {
@@ -309,214 +334,204 @@ export default function ViewEstudios() {
       </div>
 
       {/* Contenido principal */}
-      <div className="flex-1 flex flex-col">
-        {/* Header */}
-        <div className="border-b border-border bg-card p-6">
-          <div className="max-w-7xl mx-auto flex items-start gap-4">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              className="flex-shrink-0"
-            >
-              {sidebarCollapsed ? <PanelLeftOpen className="h-5 w-5" /> : <PanelLeftClose className="h-5 w-5" />}
-            </Button>
-            
-            <div className="flex-1">
-              {selectedStudy ? (
-                <>
-                  <div className="flex items-baseline gap-3 mb-2">
-                    <h1 className="text-3xl font-bold">{selectedStudy.title}</h1>
-                    {selectedStudy.patient && (
-                      <span className="text-xl text-muted-foreground">
-                        • {selectedStudy.patient.first_name} {selectedStudy.patient.last_name}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex gap-4 text-sm text-muted-foreground">
-                    <span>Ojo: {selectedStudy.eye_side}</span>
-                    <span>•</span>
-                    <span>{format(new Date(selectedStudy.created_at), "d 'de' MMMM, yyyy", { locale: es })}</span>
-                    {selectedStudy.comments && (
-                      <>
-                        <span>•</span>
-                        <span className="italic">{selectedStudy.comments}</span>
-                      </>
-                    )}
-                  </div>
-                </>
-              ) : patient ? (
-                <h1 className="text-3xl font-bold">
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Header compacto */}
+        <div className="border-b border-border bg-card px-4 py-3 flex items-center gap-3 flex-shrink-0">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            className="flex-shrink-0"
+          >
+            {sidebarCollapsed ? <PanelLeftOpen className="h-5 w-5" /> : <PanelLeftClose className="h-5 w-5" />}
+          </Button>
+
+          {selectedStudy && (
+            <div className="flex-1 min-w-0">
+              <div className="flex items-baseline gap-2">
+                <h1 className="text-lg font-semibold truncate">{selectedStudy.title}</h1>
+                {selectedStudy.patient && (
+                  <span className="text-sm text-muted-foreground truncate">
+                    • {selectedStudy.patient.first_name} {selectedStudy.patient.last_name}
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-2 text-xs text-muted-foreground">
+                <span>Ojo: {selectedStudy.eye_side}</span>
+                <span>•</span>
+                <span>{format(new Date(selectedStudy.created_at), "d 'de' MMMM, yyyy", { locale: es })}</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Área principal del visor */}
+        {!studies || studies.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center bg-neutral-900">
+            <div className="text-center">
+              <h2 className="text-xl font-semibold text-neutral-400 mb-2">
+                Paciente no cuenta con estudios en registro
+              </h2>
+              {patient && (
+                <p className="text-neutral-500">
                   {patient.first_name} {patient.last_name}
-                </h1>
-              ) : (
-                <h1 className="text-3xl font-bold">Estudios</h1>
+                </p>
               )}
             </div>
           </div>
-        </div>
-
-        {/* Galería */}
-        <ScrollArea className="flex-1">
-          <div className="max-w-7xl mx-auto p-6">
-            {!studies || studies.length === 0 ? (
-              <div className="flex items-center justify-center min-h-[60vh]">
-                <div className="text-center">
-                  <h2 className="text-2xl font-semibold text-muted-foreground mb-2">
-                    Paciente no cuenta con estudios en registro
-                  </h2>
-                  {patient && (
-                    <p className="text-muted-foreground">
-                      {patient.first_name} {patient.last_name}
-                    </p>
-                  )}
-                </div>
+        ) : selectedStudy && viewableFiles.length > 0 ? (
+          <div className="flex-1 flex flex-col min-h-0 relative">
+            {/* Visor principal */}
+            <div
+              ref={mainViewerRef}
+              className="flex-1 relative bg-neutral-900 overflow-hidden"
+            >
+              {/* Contenido principal */}
+              <div
+                className="absolute inset-0 flex items-center justify-center overflow-hidden"
+                onMouseDown={currentFile?.mime_type?.startsWith('image/') ? handleMouseDown : undefined}
+                onMouseMove={currentFile?.mime_type?.startsWith('image/') ? handleMouseMove : undefined}
+                onMouseUp={currentFile?.mime_type?.startsWith('image/') ? handleMouseUp : undefined}
+                onMouseLeave={currentFile?.mime_type?.startsWith('image/') ? handleMouseLeave : undefined}
+                style={{ cursor: zoom > 1 && currentFile?.mime_type?.startsWith('image/') ? (isPanning ? 'grabbing' : 'grab') : 'default' }}
+              >
+                {currentFile?.mime_type === 'application/pdf' ? (
+                  <div className="w-full h-full">
+                    <PdfViewer
+                      src={currentFile.signedUrl || ''}
+                      height="100%"
+                      showControls={true}
+                    />
+                  </div>
+                ) : currentFile?.mime_type?.startsWith('image/') ? (
+                  <img
+                    src={currentFile.signedUrl}
+                    alt={`Imagen ${selectedFileIndex + 1}`}
+                    className="max-w-full max-h-full object-contain transition-transform duration-200"
+                    style={{
+                      transform: `scale(${zoom}) translate(${panPosition.x / zoom}px, ${panPosition.y / zoom}px)`,
+                    }}
+                    draggable={false}
+                  />
+                ) : null}
               </div>
-            ) : selectedStudy && viewableFiles.length > 0 ? (
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            </div>
+
+            {/* Barra de controles flotante */}
+            <div
+              className="absolute bottom-28 left-1/2 -translate-x-1/2 z-50"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className="bg-neutral-800/90 backdrop-blur-sm rounded-xl px-3 py-2 flex items-center gap-1 shadow-xl border border-neutral-700">
+                {/* Zoom controls - solo para imágenes, PDFs tienen sus propios controles */}
+                {currentFile?.mime_type?.startsWith('image/') && (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={handleZoomOut}
+                      disabled={zoom <= 0.5}
+                      className="text-white hover:bg-white/20 h-8 w-8"
+                    >
+                      <ZoomOut className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={handleZoomIn}
+                      disabled={zoom >= 3}
+                      className="text-white hover:bg-white/20 h-8 w-8"
+                    >
+                      <ZoomIn className="h-4 w-4" />
+                    </Button>
+
+                    <div className="w-px h-5 bg-white/20 mx-1" />
+                  </>
+                )}
+
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={handlePrevFile}
+                  disabled={selectedFileIndex === 0}
+                  className="text-white hover:bg-white/20 h-8 w-8"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={handleNextFile}
+                  disabled={selectedFileIndex === viewableFiles.length - 1}
+                  className="text-white hover:bg-white/20 h-8 w-8"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+
+                <div className="w-px h-5 bg-white/20 mx-1" />
+
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={handlePrint}
+                  className="text-white hover:bg-white/20 h-8 w-8"
+                >
+                  <Printer className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={handleFullscreen}
+                  className="text-white hover:bg-white/20 h-8 w-8"
+                >
+                  <Maximize className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+
+            {/* Filmstrip */}
+            <div className="h-24 bg-neutral-800 border-t border-neutral-700 flex-shrink-0">
+              <div
+                ref={filmstripRef}
+                className="flex gap-2 px-4 py-3 overflow-x-auto h-full items-center scrollbar-thin scrollbar-thumb-neutral-600 scrollbar-track-transparent"
+              >
                 {viewableFiles.map((file, index) => (
                   <button
                     key={file.id}
-                    onClick={() => handleImageClick(index)}
-                    className="relative aspect-square overflow-hidden rounded-lg border border-border hover:border-primary transition-colors group"
+                    onClick={() => setSelectedFileIndex(index)}
+                    className={`flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden transition-all duration-200 ${
+                      index === selectedFileIndex
+                        ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-neutral-800 scale-105'
+                        : 'opacity-60 hover:opacity-100'
+                    }`}
                   >
                     {file.mime_type?.startsWith('image/') ? (
-                      <>
-                        <img
-                          src={file.signedUrl}
-                          alt={`Imagen ${index + 1}`}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                        />
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-                          <Maximize2 className="h-8 w-8 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
-                        </div>
-                      </>
+                      <img
+                        src={file.signedUrl}
+                        alt={`Thumbnail ${index + 1}`}
+                        className="w-full h-full object-cover"
+                      />
                     ) : file.mime_type === 'application/pdf' ? (
-                      <>
-                        <PdfThumbnail
-                          src={file.signedUrl || ''}
-                          className="w-full h-full"
-                        />
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-                          <Maximize2 className="h-8 w-8 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
-                        </div>
-                      </>
+                      <PdfThumbnail
+                        src={file.signedUrl || ''}
+                        className="w-full h-full"
+                      />
                     ) : null}
                   </button>
                 ))}
               </div>
-            ) : selectedStudy ? (
-              <div className="text-center text-muted-foreground py-12">
-                No hay archivos visualizables en este estudio
-              </div>
-            ) : (
-              <div className="text-center text-muted-foreground py-12">
-                Seleccione un estudio del panel izquierdo
-              </div>
-            )}
-          </div>
-        </ScrollArea>
-      </div>
-
-      {/* Modal de archivo ampliado */}
-      <Dialog open={selectedImageIndex !== null} onOpenChange={() => setSelectedImageIndex(null)}>
-        <DialogContent className="max-w-[98vw] sm:max-w-[95vw] max-h-[98vh] sm:max-h-[95vh] p-0 overflow-hidden">
-          <DialogTitle className="sr-only">Visor de estudios</DialogTitle>
-          {selectedImageIndex !== null && viewableFiles[selectedImageIndex] && (
-            <div className="relative bg-black">
-              {/* Controles superiores */}
-              <div className="absolute top-0 left-0 right-0 z-10 bg-black/50 py-2 px-2 sm:px-4 flex flex-wrap items-center justify-between gap-2">
-                <div className="text-white text-xs sm:text-sm flex items-center gap-1 sm:gap-2">
-                  {viewableFiles[selectedImageIndex].mime_type === 'application/pdf' && (
-                    <FileText className="h-3 w-3 sm:h-4 sm:w-4" />
-                  )}
-                  <span className="whitespace-nowrap">
-                    {viewableFiles[selectedImageIndex].mime_type === 'application/pdf' ? 'PDF' : 'Img'} {selectedImageIndex + 1}/{viewableFiles.length}
-                  </span>
-                </div>
-                <div className="flex flex-wrap gap-1 sm:gap-2">
-                  {/* Botón de ajuste de vista para imágenes */}
-                  {viewableFiles[selectedImageIndex].mime_type?.startsWith('image/') && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={toggleViewMode}
-                      className="text-white hover:bg-white/20 h-8 w-8 sm:h-10 sm:w-10"
-                      title={viewMode === 'fit' ? 'Ver tamaño real' : 'Ajustar a pantalla'}
-                    >
-                      {viewMode === 'fit' ? <Maximize2 className="h-4 w-4" /> : <Minimize2 className="h-4 w-4" />}
-                    </Button>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={handlePrint}
-                    className="text-white hover:bg-white/20 h-8 w-8 sm:h-10 sm:w-10"
-                    title="Imprimir"
-                  >
-                    <Printer className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setSelectedImageIndex(null)}
-                    className="text-white hover:bg-white/20 h-8 w-8 sm:h-10 sm:w-10"
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-
-              {/* Contenedor de archivo con scroll nativo */}
-              <div 
-                className={`overflow-auto ${viewMode === 'fit' ? 'flex items-center justify-center h-[75vh] sm:h-[80vh]' : 'max-h-[75vh] sm:max-h-[80vh]'} p-2 sm:p-4 pt-14 sm:pt-16`}
-              >
-                  {viewableFiles[selectedImageIndex].mime_type === 'application/pdf' ? (
-                    <PdfViewer 
-                      src={viewableFiles[selectedImageIndex].signedUrl || ''} 
-                    />
-                  ) : (
-                  <img
-                    src={viewableFiles[selectedImageIndex].signedUrl}
-                    alt={`Imagen ${selectedImageIndex + 1}`}
-                    className={viewMode === 'fit' ? 'h-full w-auto' : 'w-auto h-auto block'}
-                    style={viewMode === 'full' ? { transformOrigin: 'top left' } : undefined}
-                  />
-                )}
-              </div>
-
-              {/* Controles de navegación */}
-              {selectedImageIndex > 0 && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => {
-                    setSelectedImageIndex(selectedImageIndex - 1);
-                    setViewMode('fit');
-                  }}
-                  className="absolute left-4 top-1/2 -translate-y-1/2 text-white hover:bg-white/20 h-12 w-12"
-                >
-                  <ChevronLeft className="h-8 w-8" />
-                </Button>
-              )}
-
-              {selectedImageIndex < viewableFiles.length - 1 && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => {
-                    setSelectedImageIndex(selectedImageIndex + 1);
-                    setViewMode('fit');
-                  }}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-white hover:bg-white/20 h-12 w-12"
-                >
-                  <ChevronRight className="h-8 w-8" />
-                </Button>
-              )}
             </div>
-          )}
-        </DialogContent>
-      </Dialog>
+          </div>
+        ) : selectedStudy ? (
+          <div className="flex-1 flex items-center justify-center bg-neutral-900">
+            <p className="text-neutral-400">No hay archivos visualizables en este estudio</p>
+          </div>
+        ) : (
+          <div className="flex-1 flex items-center justify-center bg-neutral-900">
+            <p className="text-neutral-400">Seleccione un estudio del panel izquierdo</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
