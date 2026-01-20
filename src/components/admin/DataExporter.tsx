@@ -2228,6 +2228,45 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Función para verificar rol de usuario
+CREATE OR REPLACE FUNCTION public.has_role(_user_id UUID, _role app_role)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.user_roles WHERE user_id = _user_id AND role = _role
+  )
+$$;
+
+-- Función para obtener rol del usuario
+CREATE OR REPLACE FUNCTION public.get_user_role(_user_id UUID)
+RETURNS app_role
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT role FROM public.user_roles WHERE user_id = _user_id LIMIT 1
+$$;
+
+-- Función para verificar acceso CRM
+CREATE OR REPLACE FUNCTION public.has_crm_access(_user_id uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.user_roles
+    WHERE user_roles.user_id = _user_id
+    AND role IN ('admin', 'recepcion', 'caja', 'contabilidad', 'enfermeria', 'diagnostico')
+  )
+$$;
+
 -- ============================================================
 -- TRIGGERS
 -- ============================================================
@@ -2263,94 +2302,296 @@ CREATE INDEX IF NOT EXISTS idx_invoices_branch ON invoices(branch_id);
 CREATE INDEX IF NOT EXISTS idx_inventory_items_branch ON inventory_items(branch_id);
 
 -- ============================================================
+-- ROW LEVEL SECURITY - Habilitar RLS en todas las tablas
+-- ============================================================
+
+ALTER TABLE patients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_roles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_branches ENABLE ROW LEVEL SECURITY;
+ALTER TABLE rooms ENABLE ROW LEVEL SECURITY;
+ALTER TABLE branches ENABLE ROW LEVEL SECURITY;
+ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE schedule_blocks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE encounters ENABLE ROW LEVEL SECURITY;
+ALTER TABLE exam_eye ENABLE ROW LEVEL SECURITY;
+ALTER TABLE diagnoses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE surgeries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE surgery_files ENABLE ROW LEVEL SECURITY;
+ALTER TABLE procedures ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE study_files ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE results ENABLE ROW LEVEL SECURITY;
+ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE templates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE invoice_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cash_closures ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inventory_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inventory_lots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inventory_movements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE room_inventory_categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE room_inventory_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE room_inventory_movements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE service_prices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE suppliers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE study_types ENABLE ROW LEVEL SECURITY;
+ALTER TABLE surgery_types ENABLE ROW LEVEL SECURITY;
+ALTER TABLE procedure_types ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pending_registrations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE edge_function_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE backup_snapshots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_procedure_types ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_pipelines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_pipeline_stages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_pipeline_notes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_activity_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_activity_read ENABLE ROW LEVEL SECURITY;
+
+-- ============================================================
+-- POLÍTICAS RLS (Row Level Security)
+-- ============================================================
+
+-- PACIENTES
+CREATE POLICY "Todos pueden leer pacientes" ON patients FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Recepción y admins pueden crear pacientes" ON patients FOR INSERT TO authenticated
+  WITH CHECK (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'recepcion'));
+CREATE POLICY "Recepción y admins pueden actualizar pacientes" ON patients FOR UPDATE TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'recepcion'));
+CREATE POLICY "Admins pueden borrar pacientes" ON patients FOR DELETE TO authenticated
+  USING (has_role(auth.uid(), 'admin'));
+CREATE POLICY "Médicos pueden actualizar antecedentes de pacientes" ON patients FOR UPDATE TO authenticated
+  USING (has_role(auth.uid(), 'doctor'));
+
+-- PERFILES
+CREATE POLICY "Usuarios pueden ver todos los perfiles" ON profiles FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Usuarios pueden actualizar su propio perfil" ON profiles FOR UPDATE TO authenticated USING (user_id = auth.uid());
+CREATE POLICY "Usuarios pueden insertar su propio perfil" ON profiles FOR INSERT TO authenticated WITH CHECK (user_id = auth.uid());
+
+-- ROLES
+CREATE POLICY "Todos pueden ver roles" ON user_roles FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Solo admin puede gestionar roles" ON user_roles FOR ALL TO authenticated USING (has_role(auth.uid(), 'admin'));
+
+-- BRANCHES Y USER_BRANCHES
+CREATE POLICY "Todos pueden ver branches" ON branches FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin puede gestionar branches" ON branches FOR ALL TO authenticated USING (has_role(auth.uid(), 'admin'));
+CREATE POLICY "Todos pueden ver user_branches" ON user_branches FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin puede gestionar user_branches" ON user_branches FOR ALL TO authenticated USING (has_role(auth.uid(), 'admin'));
+
+-- SALAS
+CREATE POLICY "Todos pueden ver salas" ON rooms FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin puede gestionar salas" ON rooms FOR ALL TO authenticated USING (has_role(auth.uid(), 'admin'));
+
+-- CITAS
+CREATE POLICY "Todos pueden ver citas" ON appointments FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Personal clínico puede crear citas" ON appointments FOR INSERT TO authenticated
+  WITH CHECK (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'recepcion') OR has_role(auth.uid(), 'doctor') OR has_role(auth.uid(), 'caja'));
+CREATE POLICY "Personal clínico puede actualizar citas" ON appointments FOR UPDATE TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'recepcion') OR has_role(auth.uid(), 'doctor') OR has_role(auth.uid(), 'caja'));
+CREATE POLICY "Personal clínico puede eliminar citas" ON appointments FOR DELETE TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'recepcion') OR has_role(auth.uid(), 'doctor'));
+
+-- BLOQUEOS DE AGENDA
+CREATE POLICY "Todos pueden ver bloqueos" ON schedule_blocks FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Personal puede gestionar bloqueos" ON schedule_blocks FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'recepcion') OR has_role(auth.uid(), 'doctor'));
+
+-- ENCUENTROS CLÍNICOS
+CREATE POLICY "Todos pueden ver encuentros" ON encounters FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Personal clínico puede crear encuentros" ON encounters FOR INSERT TO authenticated
+  WITH CHECK (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'doctor') OR has_role(auth.uid(), 'optometrista') OR has_role(auth.uid(), 'asistente'));
+CREATE POLICY "Personal clínico puede actualizar encuentros" ON encounters FOR UPDATE TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'doctor') OR has_role(auth.uid(), 'optometrista') OR has_role(auth.uid(), 'asistente'));
+CREATE POLICY "Admin y doctor pueden eliminar encuentros" ON encounters FOR DELETE TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'doctor'));
+
+-- EXÁMENES OCULARES
+CREATE POLICY "Todos pueden ver exámenes" ON exam_eye FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Personal clínico puede gestionar exámenes" ON exam_eye FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'doctor') OR has_role(auth.uid(), 'optometrista'));
+
+-- DIAGNÓSTICOS
+CREATE POLICY "Todos pueden ver diagnósticos" ON diagnoses FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Personal clínico puede gestionar diagnósticos" ON diagnoses FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'doctor'));
+
+-- CIRUGÍAS
+CREATE POLICY "Todos pueden ver cirugías" ON surgeries FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Médicos pueden gestionar cirugías" ON surgeries FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'doctor'));
+
+-- ARCHIVOS DE CIRUGÍAS
+CREATE POLICY "Personal clínico puede ver archivos de cirugías" ON surgery_files FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Personal clínico puede crear archivos de cirugías" ON surgery_files FOR INSERT TO authenticated
+  WITH CHECK (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'doctor') OR has_role(auth.uid(), 'enfermeria'));
+CREATE POLICY "Personal clínico puede eliminar archivos de cirugías" ON surgery_files FOR DELETE TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'doctor'));
+
+-- PROCEDIMIENTOS
+CREATE POLICY "Todos pueden ver procedimientos" ON procedures FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Personal clínico puede gestionar procedimientos" ON procedures FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'doctor'));
+
+-- ESTUDIOS
+CREATE POLICY "Todos pueden ver estudios" ON studies FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Personal puede gestionar estudios" ON studies FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'doctor') OR has_role(auth.uid(), 'diagnostico'));
+
+-- ARCHIVOS DE ESTUDIOS
+CREATE POLICY "Personal clínico puede ver archivos de estudios" ON study_files FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Personal clínico puede crear archivos de estudios" ON study_files FOR INSERT TO authenticated
+  WITH CHECK (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'doctor') OR has_role(auth.uid(), 'diagnostico'));
+CREATE POLICY "Personal clínico puede eliminar archivos de estudios" ON study_files FOR DELETE TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'doctor'));
+
+-- ÓRDENES Y RESULTADOS
+CREATE POLICY "Todos pueden ver órdenes" ON orders FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Personal clínico puede gestionar órdenes" ON orders FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'doctor'));
+CREATE POLICY "Todos pueden ver resultados" ON results FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Personal clínico puede gestionar resultados" ON results FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'doctor') OR has_role(auth.uid(), 'diagnostico'));
+
+-- DOCUMENTOS
+CREATE POLICY "Todos pueden ver documentos" ON documents FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Personal clínico puede crear documentos" ON documents FOR INSERT TO authenticated
+  WITH CHECK (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'doctor'));
+
+-- PLANTILLAS
+CREATE POLICY "Todos pueden ver plantillas" ON templates FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin puede gestionar plantillas" ON templates FOR ALL TO authenticated USING (has_role(auth.uid(), 'admin'));
+
+-- FACTURAS, ITEMS Y PAGOS
+CREATE POLICY "Todos pueden ver facturas" ON invoices FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin y caja pueden gestionar facturas" ON invoices FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'caja') OR has_role(auth.uid(), 'contabilidad'));
+CREATE POLICY "Todos pueden ver items de factura" ON invoice_items FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin y caja pueden gestionar items" ON invoice_items FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'caja') OR has_role(auth.uid(), 'contabilidad'));
+CREATE POLICY "Todos pueden ver pagos" ON payments FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin y caja pueden gestionar pagos" ON payments FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'caja') OR has_role(auth.uid(), 'contabilidad'));
+
+-- CIERRES DE CAJA
+CREATE POLICY "Admin y caja pueden ver cierres" ON cash_closures FOR SELECT TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'caja') OR has_role(auth.uid(), 'contabilidad'));
+CREATE POLICY "Admin y caja pueden crear cierres" ON cash_closures FOR INSERT TO authenticated
+  WITH CHECK (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'caja') OR has_role(auth.uid(), 'contabilidad'));
+
+-- INVENTARIO (BOX)
+CREATE POLICY "Todos pueden ver inventario" ON inventory_items FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin y caja pueden gestionar inventario" ON inventory_items FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'caja'));
+CREATE POLICY "Todos pueden ver lotes" ON inventory_lots FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin y caja pueden gestionar lotes" ON inventory_lots FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'caja'));
+CREATE POLICY "Todos pueden ver movimientos" ON inventory_movements FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin y caja pueden gestionar movimientos" ON inventory_movements FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'caja'));
+
+-- INVENTARIO DE SALAS
+CREATE POLICY "Todos pueden ver categorías de inventario de sala" ON room_inventory_categories FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin y enfermería pueden gestionar categorías" ON room_inventory_categories FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'enfermeria'));
+CREATE POLICY "Todos pueden ver items de inventario de sala" ON room_inventory_items FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin y enfermería pueden gestionar items" ON room_inventory_items FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'enfermeria'));
+CREATE POLICY "Todos pueden ver movimientos de sala" ON room_inventory_movements FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin y enfermería pueden gestionar movimientos de sala" ON room_inventory_movements FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'enfermeria'));
+
+-- PRECIOS DE SERVICIOS
+CREATE POLICY "Todos pueden ver precios" ON service_prices FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin y caja pueden gestionar precios" ON service_prices FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'caja') OR has_role(auth.uid(), 'contabilidad'));
+
+-- PROVEEDORES
+CREATE POLICY "Todos pueden ver proveedores" ON suppliers FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin y caja pueden gestionar proveedores" ON suppliers FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin') OR has_role(auth.uid(), 'caja'));
+
+-- CATÁLOGOS (tipos de cirugía, estudio, procedimiento)
+CREATE POLICY "Todos pueden ver tipos de cirugía" ON surgery_types FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Solo admin puede gestionar tipos de cirugía" ON surgery_types FOR ALL TO authenticated USING (has_role(auth.uid(), 'admin'));
+CREATE POLICY "Todos pueden ver tipos de estudio" ON study_types FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Solo admin puede gestionar tipos de estudio" ON study_types FOR ALL TO authenticated USING (has_role(auth.uid(), 'admin'));
+CREATE POLICY "Todos pueden ver tipos de procedimiento" ON procedure_types FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Solo admin puede gestionar tipos de procedimiento" ON procedure_types FOR ALL TO authenticated USING (has_role(auth.uid(), 'admin'));
+
+-- REGISTROS PENDIENTES
+CREATE POLICY "Admin puede ver registros pendientes" ON pending_registrations FOR SELECT TO authenticated
+  USING (has_role(auth.uid(), 'admin'));
+CREATE POLICY "Admin puede gestionar registros pendientes" ON pending_registrations FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin'));
+
+-- CONFIGURACIÓN
+CREATE POLICY "Todos pueden ver app_settings" ON app_settings FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin puede gestionar app_settings" ON app_settings FOR ALL TO authenticated USING (has_role(auth.uid(), 'admin'));
+CREATE POLICY "Todos pueden ver edge_function_settings" ON edge_function_settings FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admin puede gestionar edge_function_settings" ON edge_function_settings FOR ALL TO authenticated USING (has_role(auth.uid(), 'admin'));
+
+-- AUDITORÍA Y BACKUPS
+CREATE POLICY "Todos pueden ver audit_logs" ON audit_logs FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Sistema puede insertar audit_logs" ON audit_logs FOR INSERT TO authenticated WITH CHECK (true);
+CREATE POLICY "Admin puede gestionar snapshots" ON backup_snapshots FOR ALL TO authenticated USING (has_role(auth.uid(), 'admin'));
+
+-- CRM - TIPOS DE PROCEDIMIENTO
+CREATE POLICY "Usuarios CRM pueden ver tipos de procedimiento CRM" ON crm_procedure_types FOR SELECT TO authenticated
+  USING (has_crm_access(auth.uid()));
+CREATE POLICY "Admin puede gestionar tipos de procedimiento CRM" ON crm_procedure_types FOR ALL TO authenticated
+  USING (has_role(auth.uid(), 'admin'));
+
+-- CRM - PIPELINES
+CREATE POLICY "Usuarios CRM pueden ver pipelines" ON crm_pipelines FOR SELECT TO authenticated
+  USING (has_crm_access(auth.uid()));
+CREATE POLICY "Usuarios CRM pueden gestionar pipelines" ON crm_pipelines FOR ALL TO authenticated
+  USING (has_crm_access(auth.uid())) WITH CHECK (has_crm_access(auth.uid()));
+
+-- CRM - ETAPAS
+CREATE POLICY "Usuarios CRM pueden ver etapas" ON crm_pipeline_stages FOR SELECT TO authenticated
+  USING (has_crm_access(auth.uid()));
+CREATE POLICY "Usuarios CRM pueden gestionar etapas" ON crm_pipeline_stages FOR ALL TO authenticated
+  USING (has_crm_access(auth.uid())) WITH CHECK (has_crm_access(auth.uid()));
+
+-- CRM - NOTAS
+CREATE POLICY "Usuarios CRM pueden ver notas" ON crm_pipeline_notes FOR SELECT TO authenticated
+  USING (has_crm_access(auth.uid()));
+CREATE POLICY "Usuarios CRM pueden gestionar notas" ON crm_pipeline_notes FOR ALL TO authenticated
+  USING (has_crm_access(auth.uid())) WITH CHECK (has_crm_access(auth.uid()));
+
+-- CRM - ACTIVIDAD
+CREATE POLICY "Usuarios CRM pueden ver actividades" ON crm_activity_log FOR SELECT TO authenticated
+  USING (has_crm_access(auth.uid()));
+CREATE POLICY "Usuarios CRM pueden registrar actividades" ON crm_activity_log FOR INSERT TO authenticated
+  WITH CHECK (has_crm_access(auth.uid()));
+CREATE POLICY "Usuarios pueden gestionar su lectura de actividad" ON crm_activity_read FOR ALL TO authenticated
+  USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
+
+-- ============================================================
 -- FIN DE MIGRACIÓN CONSOLIDADA
 -- ============================================================
 
 -- NOTA: Después de ejecutar este script:
 -- 1. Ejecutar el script de creación de usuarios (create_users.js)
 -- 2. Importar los CSVs en el orden indicado en _IMPORT_ORDER.txt
--- 3. Configurar RLS policies según sea necesario
 `;
   };
 
   const downloadMigrations = async () => {
     setDownloadingMigrations(true);
     setSqlExportProgress(0);
-    setSqlExportPhase('Generando estructura de tablas...');
-    
+    setSqlExportPhase('Generando esquema completo...');
+
     try {
-      // PASO 1: Generar estructura de tablas optimizada (local)
-      const tablesSQL = generateConsolidatedMigrationSQL();
-      
-      setSqlExportProgress(30);
-      setSqlExportPhase('Obteniendo RLS y funciones...');
+      // Generar esquema completo localmente (incluye tablas, funciones, triggers, RLS)
+      // Ya no dependemos del Edge Function - todo está en generateConsolidatedMigrationSQL()
+      const completeSQL = generateConsolidatedMigrationSQL();
 
-      // PASO 2: Obtener RLS y funciones del Edge Function
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error('No hay sesión activa');
-
-      let rlsAndFunctionsSQL = '';
-      
-      try {
-        const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/export-migrations`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${session.access_token}`,
-          },
-        });
-
-        if (response.ok) {
-          const result = await response.json();
-          const edgeFunctionContent = result.content || '';
-          
-          // Extraer solo las secciones de RLS y funciones del contenido del Edge Function
-          // El Edge Function devuelve todo, pero queremos solo RLS y funciones
-          const rlsMatch = edgeFunctionContent.match(/-- =+ POLÍTICAS RLS =+[\s\S]*?(?=-- =+ [A-Z]|$)/gi);
-          const functionsMatch = edgeFunctionContent.match(/-- =+ FUNCIONES[\s\S]*?(?=-- =+ [A-Z]|$)/gi);
-          const triggersMatch = edgeFunctionContent.match(/-- =+ TRIGGERS[\s\S]*?(?=-- =+ [A-Z]|$)/gi);
-          
-          if (rlsMatch) rlsAndFunctionsSQL += '\n' + rlsMatch.join('\n');
-          if (functionsMatch) rlsAndFunctionsSQL += '\n' + functionsMatch.join('\n');
-          if (triggersMatch) rlsAndFunctionsSQL += '\n' + triggersMatch.join('\n');
-        }
-      } catch (edgeError) {
-        console.warn('No se pudieron obtener RLS/funciones del Edge Function:', edgeError);
-        // Continuar sin RLS si el Edge Function falla
-      }
-
-      setSqlExportProgress(70);
-      setSqlExportPhase('Combinando esquema completo...');
-
-      // PASO 3: Combinar todo en un solo archivo
-      const exportDate = new Date().toISOString();
-      const completeSQL = `-- ============================================================
--- ESQUEMA SQL COMPLETO - CentroVisión
--- ============================================================
--- 
--- Este archivo incluye:
--- ✅ Estructura de tablas optimizada (con deleted_at, etc.)
--- ✅ ENUMs y tipos personalizados
--- ✅ Funciones de base de datos
--- ✅ Triggers
--- ✅ Políticas RLS (seguridad)
--- 
--- USO: Ejecutar en SQL Editor del nuevo proyecto Supabase
---      ANTES de importar los CSVs.
--- 
--- Fecha de exportación: ${exportDate}
--- ============================================================
-
-${tablesSQL}
-
-${rlsAndFunctionsSQL ? `
--- ============================================================
--- SECCIONES ADICIONALES (RLS, Funciones, Triggers)
--- ============================================================
-${rlsAndFunctionsSQL}
-` : '-- (No se pudieron obtener políticas RLS adicionales del servidor)'}
-`;
-      
-      setSqlExportProgress(85);
+      setSqlExportProgress(80);
       setSqlExportPhase('Preparando descarga...');
       
       // Create download
