@@ -38,7 +38,7 @@ export const PdfViewer = ({ src, height = '100%', zoom: externalZoom, onZoomChan
 
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [numPages, setNumPages] = useState(0);
+  const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [internalZoom, setInternalZoom] = useState(1);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -67,7 +67,7 @@ export const PdfViewer = ({ src, height = '100%', zoom: externalZoom, onZoomChan
         }
 
         pdfDocRef.current = pdf;
-        setNumPages(pdf.numPages);
+        setPdfDoc(pdf);
         setIsLoading(false);
       } catch (err) {
         console.error('[PdfViewer] Error al cargar PDF:', err);
@@ -111,7 +111,7 @@ export const PdfViewer = ({ src, height = '100%', zoom: externalZoom, onZoomChan
     const scale = BASE_SCALE * zoom;
 
     try {
-      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      for (let pageNum = 1; pageNum <= (pdf.numPages || 0); pageNum++) {
         const page = await pdf.getPage(pageNum);
         const viewport = page.getViewport({ scale });
 
@@ -145,12 +145,12 @@ export const PdfViewer = ({ src, height = '100%', zoom: externalZoom, onZoomChan
     }
   }, [zoom, BASE_SCALE]);
 
-  // Re-renderizar cuando cambia zoom o numPages
+  // Re-renderizar cuando cambia zoom o pdfDoc
   useEffect(() => {
-    if (numPages > 0) {
+    if (pdfDoc) {
       renderPages();
     }
-  }, [numPages, renderPages]);
+  }, [pdfDoc, renderPages]);
 
   const handleZoomIn = () => setZoom(Math.min(zoom + 0.25, 3));
   const handleZoomOut = () => setZoom(Math.max(zoom - 0.25, 0.5));
@@ -171,9 +171,17 @@ export const PdfViewer = ({ src, height = '100%', zoom: externalZoom, onZoomChan
     }
   }, [zoom, setZoom]);
 
+  // Verificar si hay contenido para hacer scroll
+  const canPan = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return false;
+    return container.scrollHeight > container.clientHeight ||
+           container.scrollWidth > container.clientWidth;
+  }, []);
+
   // Handlers para drag/pan
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (zoom <= 1) return;
+    if (!canPan()) return;
     e.preventDefault();
     isDraggingRef.current = true;
     setIsDragging(true);
@@ -181,7 +189,7 @@ export const PdfViewer = ({ src, height = '100%', zoom: externalZoom, onZoomChan
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDraggingRef.current || zoom <= 1 || !scrollContainerRef.current) return;
+    if (!isDraggingRef.current || !scrollContainerRef.current) return;
 
     const deltaX = e.clientX - lastPositionRef.current.x;
     const deltaY = e.clientY - lastPositionRef.current.y;
@@ -279,7 +287,7 @@ export const PdfViewer = ({ src, height = '100%', zoom: externalZoom, onZoomChan
       <div
         ref={scrollContainerRef}
         className="flex-1 overflow-auto overscroll-contain"
-        style={{ cursor: zoom > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default' }}
+        style={{ cursor: isDragging ? 'grabbing' : 'grab' }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}

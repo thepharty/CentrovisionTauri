@@ -3,7 +3,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen, Printer, Maximize } from 'lucide-react';
+import { ArrowLeft, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen, Download, Sun } from 'lucide-react';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -40,9 +40,10 @@ export default function ViewEstudios() {
   const [selectedFileIndex, setSelectedFileIndex] = useState<number>(0);
   const [zoom, setZoom] = useState(1);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
+  const [contrast, setContrast] = useState(100);
+  const [showContrastSlider, setShowContrastSlider] = useState(false);
   const lastPanPosition = useRef({ x: 0, y: 0 });
   const mainViewerRef = useRef<HTMLDivElement>(null);
   const filmstripRef = useRef<HTMLDivElement>(null);
@@ -113,10 +114,12 @@ export default function ViewEstudios() {
     }
   }, [studies, selectedStudy]);
 
-  // Reset zoom y pan cuando cambia el archivo
+  // Reset zoom, pan y contraste cuando cambia el archivo
   useEffect(() => {
     setZoom(1);
     setPanPosition({ x: 0, y: 0 });
+    setContrast(100);
+    setShowContrastSlider(false);
   }, [selectedFileIndex, selectedStudy]);
 
   // Scroll filmstrip para mostrar el thumbnail seleccionado
@@ -138,24 +141,12 @@ export default function ViewEstudios() {
         setSelectedFileIndex(selectedFileIndex - 1);
       } else if (e.key === 'ArrowRight' && selectedFileIndex < viewableFiles.length - 1) {
         setSelectedFileIndex(selectedFileIndex + 1);
-      } else if (e.key === 'Escape' && isFullscreen) {
-        document.exitFullscreen();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedFileIndex, viewableFiles.length, isFullscreen]);
-
-  // Detectar cambios de fullscreen
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-    };
-
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, []);
+  }, [selectedFileIndex, viewableFiles.length]);
 
 
   const handleStudySelect = (study: Study) => {
@@ -187,16 +178,6 @@ export default function ViewEstudios() {
     }
   };
 
-  const handleFullscreen = () => {
-    if (mainViewerRef.current) {
-      if (!document.fullscreenElement) {
-        mainViewerRef.current.requestFullscreen();
-      } else {
-        document.exitFullscreen();
-      }
-    }
-  };
-
   // Pan handlers para imágenes con zoom
   const handleMouseDown = (e: React.MouseEvent) => {
     if (zoom <= 1 || currentFile?.mime_type === 'application/pdf') return;
@@ -219,50 +200,33 @@ export default function ViewEstudios() {
   const handleMouseUp = () => setIsPanning(false);
   const handleMouseLeave = () => setIsPanning(false);
 
-  // Imprimir
-  const handlePrint = () => {
-    if (!currentFile) return;
+  // Descargar archivo
+  const handleDownload = async () => {
+    if (!currentFile?.signedUrl) return;
 
-    if (currentFile.mime_type === 'application/pdf') {
-      window.open(currentFile.signedUrl, '_blank');
-    } else if (currentFile.mime_type?.startsWith('image/')) {
-      const printWindow = window.open('', '_blank');
-      const studyTitle = selectedStudy?.title || 'Estudio';
-      const patientName = selectedStudy?.patient
-        ? `${selectedStudy.patient.first_name} ${selectedStudy.patient.last_name}`
-        : '';
+    try {
+      // Extraer nombre del archivo del path
+      const fileName = currentFile.file_path.split('/').pop() || 'archivo';
 
-      printWindow?.document.write(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>Imprimir ${studyTitle}</title>
-            <style>
-              body { margin: 0; padding: 20px; font-family: system-ui, -apple-system, sans-serif; }
-              .header { text-align: center; margin-bottom: 20px; }
-              .header h1 { margin: 0; font-size: 24px; }
-              .header p { margin: 5px 0; color: #666; }
-              .image-container { display: flex; justify-content: center; align-items: center; }
-              img { max-width: 100%; height: auto; }
-              @media print {
-                body { margin: 0; padding: 10px; }
-                img { max-width: 100%; page-break-inside: avoid; }
-              }
-            </style>
-          </head>
-          <body>
-            <div class="header">
-              <h1>${studyTitle}</h1>
-              ${patientName ? `<p>${patientName}</p>` : ''}
-              <p>Ojo: ${selectedStudy?.eye_side || ''} - ${format(new Date(selectedStudy?.created_at || ''), "d 'de' MMMM, yyyy", { locale: es })}</p>
-            </div>
-            <div class="image-container">
-              <img src="${currentFile.signedUrl}" onload="window.print(); window.onafterprint = function() { window.close(); }" />
-            </div>
-          </body>
-        </html>
-      `);
-      printWindow?.document.close();
+      // Fetch el archivo como blob para poder descargarlo (cross-origin)
+      const response = await fetch(currentFile.signedUrl);
+      const blob = await response.blob();
+
+      // Crear URL temporal del blob
+      const blobUrl = window.URL.createObjectURL(blob);
+
+      // Crear link y forzar descarga
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+
+      // Limpiar
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      console.error('Error al descargar archivo:', error);
     }
   };
 
@@ -407,9 +371,10 @@ export default function ViewEstudios() {
                   <img
                     src={currentFile.signedUrl}
                     alt={`Imagen ${selectedFileIndex + 1}`}
-                    className="max-w-full max-h-full object-contain transition-transform duration-200"
+                    className={`max-w-full max-h-full object-contain ${!isPanning ? 'transition-transform duration-200' : ''}`}
                     style={{
                       transform: `scale(${zoom}) translate(${panPosition.x / zoom}px, ${panPosition.y / zoom}px)`,
+                      filter: `contrast(${contrast}%)`,
                     }}
                     draggable={false}
                   />
@@ -423,7 +388,7 @@ export default function ViewEstudios() {
               onMouseDown={(e) => e.stopPropagation()}
             >
               <div className="bg-neutral-800/90 backdrop-blur-sm rounded-xl px-3 py-2 flex items-center gap-1 shadow-xl border border-neutral-700">
-                {/* Zoom controls - solo para imágenes, PDFs tienen sus propios controles */}
+                {/* Zoom y contraste - solo para imágenes, PDFs tienen sus propios controles */}
                 {currentFile?.mime_type?.startsWith('image/') && (
                   <>
                     <Button
@@ -444,6 +409,46 @@ export default function ViewEstudios() {
                     >
                       <ZoomIn className="h-4 w-4" />
                     </Button>
+
+                    <div className="w-px h-5 bg-white/20 mx-1" />
+
+                    <div className="relative">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setShowContrastSlider(!showContrastSlider)}
+                        className={`text-white hover:bg-white/20 h-8 w-8 ${showContrastSlider ? 'bg-white/20' : ''}`}
+                      >
+                        <Sun className="h-4 w-4" />
+                      </Button>
+
+                      {showContrastSlider && (
+                        <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-neutral-800/95 backdrop-blur-sm rounded-lg px-3 py-2 shadow-xl border border-white/10 w-44">
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className="text-white/70 text-xs font-medium">Contraste</span>
+                            <span className="text-white/40 text-xs tabular-nums">{contrast}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            value={contrast}
+                            onChange={(e) => setContrast(Number(e.target.value))}
+                            min={50}
+                            max={200}
+                            step={5}
+                            className="w-full h-1 bg-white/20 rounded-full appearance-none cursor-pointer
+                              [&::-webkit-slider-thumb]:appearance-none
+                              [&::-webkit-slider-thumb]:w-3
+                              [&::-webkit-slider-thumb]:h-3
+                              [&::-webkit-slider-thumb]:rounded-full
+                              [&::-webkit-slider-thumb]:bg-white/80
+                              [&::-webkit-slider-thumb]:shadow-sm
+                              [&::-webkit-slider-thumb]:cursor-pointer
+                              [&::-webkit-slider-thumb]:transition-transform
+                              [&::-webkit-slider-thumb]:hover:scale-110"
+                          />
+                        </div>
+                      )}
+                    </div>
 
                     <div className="w-px h-5 bg-white/20 mx-1" />
                   </>
@@ -473,18 +478,10 @@ export default function ViewEstudios() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  onClick={handlePrint}
+                  onClick={handleDownload}
                   className="text-white hover:bg-white/20 h-8 w-8"
                 >
-                  <Printer className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={handleFullscreen}
-                  className="text-white hover:bg-white/20 h-8 w-8"
-                >
-                  <Maximize className="h-4 w-4" />
+                  <Download className="h-4 w-4" />
                 </Button>
               </div>
             </div>
