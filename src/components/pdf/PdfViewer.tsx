@@ -24,9 +24,10 @@ interface PdfViewerProps {
   zoom?: number;
   onZoomChange?: (zoom: number) => void;
   showControls?: boolean;
+  onTextExtracted?: (text: string) => void;
 }
 
-export const PdfViewer = ({ src, height = '100%', zoom: externalZoom, onZoomChange, showControls = true }: PdfViewerProps) => {
+export const PdfViewer = ({ src, height = '100%', zoom: externalZoom, onZoomChange, showControls = true, onTextExtracted }: PdfViewerProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const pdfDocRef = useRef<PDFDocumentProxy | null>(null);
@@ -151,6 +152,49 @@ export const PdfViewer = ({ src, height = '100%', zoom: externalZoom, onZoomChan
       renderPages();
     }
   }, [pdfDoc, renderPages]);
+
+  // Función para formatear texto - simple con buen espaciado
+  const formatText = (rawText: string): string => {
+    let formatted = rawText;
+
+    // Agregar salto de línea después de cada valor con unidad
+    formatted = formatted.replace(/(\d+\.?\d*\s*D)(\s*@\s*\d+°)?/g, '$1$2\n');
+    formatted = formatted.replace(/(\d+\.?\d*\s*mm)(\s*\([^)]+\))?/g, '$1$2\n');
+    formatted = formatted.replace(/(\d+\.?\d*\s*[μµ]m)/g, '$1\n');
+    formatted = formatted.replace(/([\d.]+\/[\d.\-]+\s*mm)/g, '$1\n');
+
+    // Limpiar espacios múltiples pero mantener saltos de línea
+    formatted = formatted.replace(/[ \t]+/g, ' ');
+    formatted = formatted.replace(/\n /g, '\n');
+    formatted = formatted.replace(/\n{3,}/g, '\n\n');
+
+    return formatted.trim();
+  };
+
+  // Extraer texto del PDF cuando se carga
+  useEffect(() => {
+    if (!pdfDoc || !onTextExtracted) return;
+
+    const extractText = async () => {
+      try {
+        let fullText = '';
+        for (let i = 1; i <= pdfDoc.numPages; i++) {
+          const page = await pdfDoc.getPage(i);
+          const textContent = await page.getTextContent();
+          const pageText = textContent.items
+            .map((item: any) => item.str)
+            .join(' ');
+          fullText += `━━━ Página ${i} ━━━\n\n${formatText(pageText)}\n\n`;
+        }
+        onTextExtracted(fullText);
+      } catch (err) {
+        console.error('[PdfViewer] Error extrayendo texto:', err);
+        onTextExtracted('Error al extraer texto del PDF');
+      }
+    };
+
+    extractText();
+  }, [pdfDoc, onTextExtracted]);
 
   const handleZoomIn = () => setZoom(Math.min(zoom + 0.25, 3));
   const handleZoomOut = () => setZoom(Math.max(zoom - 0.25, 0.5));

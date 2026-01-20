@@ -3,7 +3,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen, Download, Sun } from 'lucide-react';
+import { ArrowLeft, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen, Download, Sun, FileText, X } from 'lucide-react';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -44,6 +44,8 @@ export default function ViewEstudios() {
   const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
   const [contrast, setContrast] = useState(100);
   const [showContrastSlider, setShowContrastSlider] = useState(false);
+  const [pdfText, setPdfText] = useState<string>('');
+  const [showTextSidebar, setShowTextSidebar] = useState(false);
   const lastPanPosition = useRef({ x: 0, y: 0 });
   const mainViewerRef = useRef<HTMLDivElement>(null);
   const filmstripRef = useRef<HTMLDivElement>(null);
@@ -114,12 +116,14 @@ export default function ViewEstudios() {
     }
   }, [studies, selectedStudy]);
 
-  // Reset zoom, pan y contraste cuando cambia el archivo
+  // Reset zoom, pan, contraste y texto cuando cambia el archivo
   useEffect(() => {
     setZoom(1);
     setPanPosition({ x: 0, y: 0 });
     setContrast(100);
     setShowContrastSlider(false);
+    setPdfText('');
+    setShowTextSidebar(false);
   }, [selectedFileIndex, selectedStudy]);
 
   // Scroll filmstrip para mostrar el thumbnail seleccionado
@@ -365,6 +369,7 @@ export default function ViewEstudios() {
                       src={currentFile.signedUrl || ''}
                       height="100%"
                       showControls={true}
+                      onTextExtracted={setPdfText}
                     />
                   </div>
                 ) : currentFile?.mime_type?.startsWith('image/') ? (
@@ -483,8 +488,44 @@ export default function ViewEstudios() {
                 >
                   <Download className="h-4 w-4" />
                 </Button>
+
+                {currentFile?.mime_type === 'application/pdf' && (
+                  <>
+                    <div className="w-px h-5 bg-white/20 mx-1" />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => setShowTextSidebar(!showTextSidebar)}
+                      className={`text-white hover:bg-white/20 h-8 w-8 ${showTextSidebar ? 'bg-white/20' : ''}`}
+                    >
+                      <FileText className="h-4 w-4" />
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
+
+            {/* Sidebar de texto extraído */}
+            {showTextSidebar && currentFile?.mime_type === 'application/pdf' && (
+              <div className="absolute inset-y-0 right-0 w-80 bg-neutral-900/90 backdrop-blur-sm border-l border-neutral-700 z-40 flex flex-col">
+                <div className="flex items-center justify-between p-3 border-b border-neutral-700">
+                  <span className="text-white font-medium text-sm">Texto del documento</span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setShowTextSidebar(false)}
+                    className="text-white hover:bg-white/20 h-7 w-7"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+                <div className="flex-1 overflow-auto p-4">
+                  <pre className="text-white/80 text-sm whitespace-pre-wrap font-sans">
+                    {pdfText || 'Extrayendo texto...'}
+                  </pre>
+                </div>
+              </div>
+            )}
 
             {/* Filmstrip */}
             <div className="h-24 bg-neutral-800 border-t border-neutral-700 flex-shrink-0">
