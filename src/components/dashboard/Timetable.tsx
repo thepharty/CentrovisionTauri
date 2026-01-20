@@ -7,12 +7,13 @@ import { clinicNow, clinicStartOfWeek, clinicEndOfWeek, fromClinicTime, toClinic
 import { DraggableAppointmentBlock } from './DraggableAppointmentBlock';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { useBranch, isValidBranchId } from '@/hooks/useBranch';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 import { isTauri, saveAppointmentsToSqlite, getAppointmentsFromSqlite, AppointmentCache } from '@/lib/dataSource';
+import { DndContext, DragEndEvent, DragOverlay, DragStartEvent, useDroppable, PointerSensor, TouchSensor, useSensor, useSensors } from '@dnd-kit/core';
 
 interface TimetableProps {
   currentDate: Date;
@@ -33,13 +34,52 @@ const TIME_SLOTS = Array.from({ length: 14 * 4 }, (_, i) => {
   return { hour, minutes };
 });
 
+// Droppable slot component for @dnd-kit
+interface DroppableSlotProps {
+  id: string;
+  children: React.ReactNode;
+  onDoubleClick: () => void;
+}
+
+function DroppableSlot({ id, children, onDoubleClick }: DroppableSlotProps) {
+  const { isOver, setNodeRef } = useDroppable({ id });
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={`relative border-r h-full p-1 transition-colors cursor-pointer overflow-visible flex-1 ${
+        isOver ? 'bg-primary/20' : 'hover:bg-accent/5'
+      }`}
+      onDoubleClick={onDoubleClick}
+    >
+      {children}
+    </div>
+  );
+}
+
 export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppointmentClick, onAppointmentDoubleClick, onAppointmentNoteClick, onBlockClick, showDiagnosticoRoom = false, showQuirofanoRoom = false }: TimetableProps) {
   const queryClient = useQueryClient();
   const doctorMode = selectedDoctorIds.length > 0;
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const { role } = useAuth();
   const { currentBranch } = useBranch();
   const { isOnline } = useNetworkStatus();
+
+  // @dnd-kit sensors - same as KanbanBoard
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8, // 8px movement required to start drag
+      },
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: {
+        delay: 200,
+        tolerance: 5,
+      },
+    })
+  );
 
   // Actualizar la hora cada minuto usando timezone de la clínica
   useEffect(() => {
@@ -443,22 +483,54 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
     },
   });
 
-  const handleDrop = (e: React.DragEvent, day: Date, hour: number, minutes: number, colId: string) => {
-    e.preventDefault();
-    const appointmentId = e.dataTransfer.getData('appointmentId');
-    
-    if (!appointmentId) return;
+  // @dnd-kit handlers
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    console.log('[Timetable] DND-KIT DRAG START', event.active.id);
+    setActiveDragId(event.active.id as string);
+  }, []);
 
-    const newStartTime = new Date(day);
-    newStartTime.setHours(hour, minutes, 0, 0);
+  const handleDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event;
+    setActiveDragId(null);
 
+    if (!over) {
+      console.log('[Timetable] DND-KIT DRAG END - no drop target');
+      return;
+    }
+
+    console.log('[Timetable] DND-KIT DROP', { activeId: active.id, overId: over.id });
+
+    // Parse the droppable ID: format is "slot|{date}|{colId}|{hour}|{minutes}"
+    // Using | as separator because colId (UUID) contains hyphens
+    const dropId = over.id as string;
+    if (!dropId.startsWith('slot|')) {
+      console.log('[Timetable] Invalid drop target:', dropId);
+      return;
+    }
+
+    const parts = dropId.split('|');
+    // slot|2024-01-15|uuid-with-dashes|7|0
+    // parts: ['slot', '2024-01-15', 'colId', '7', '0']
+    const dateStr = parts[1];
+    const colId = parts[2];
+    const hour = parseInt(parts[3], 10);
+    const minutes = parseInt(parts[4], 10);
+
+    const appointmentId = active.id as string;
+
+    // Create date in clinic timezone, then convert to UTC for storage
+    // dateStr is "YYYY-MM-DD", we need to create a Date object representing
+    // that date and time in Guatemala timezone
+    const [year, month, dayNum] = dateStr.split('-').map(Number);
+    const clinicLocalTime = new Date(year, month - 1, dayNum, hour, minutes, 0, 0);
+    const newStartTime = fromClinicTime(clinicLocalTime);
+
+    console.log('[Timetable] Moving appointment:', { appointmentId, clinicLocalTime, newStartTime: newStartTime.toISOString(), colId });
     updateAppointmentTimeMutation.mutate({ appointmentId, newStartTime });
-  };
+  }, [updateAppointmentTimeMutation]);
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-  };
+  // Get the active appointment for DragOverlay
+  const activeAppointment = activeDragId ? appointments.find(apt => apt.id === activeDragId) : null;
 
   const getAppointmentsForSlot = (colId: string, day: Date, hour: number, minutes: number, isDoctor: boolean, roomKind?: string) => {
     return appointments.filter(apt => {
@@ -564,12 +636,17 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
   }
 
   return (
+    <DndContext
+      sensors={sensors}
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+    >
     <div className="h-[calc(100vh-120px)] overflow-x-hidden overflow-y-auto border rounded-lg">
       {/* Header fijo */}
       <div className="flex border-b bg-card sticky top-0 z-[5]">
         {/* Time header - sticky */}
         <div className="w-20 flex-shrink-0 border-r bg-muted/50 sticky left-0 z-[4]"></div>
-        
+
         {/* Columns header - scrollable */}
         <div className="flex-1 overflow-x-hidden overflow-y-hidden">
           <div className="flex">
@@ -607,8 +684,8 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
         {/* Time column - sticky left */}
         <div className="w-20 flex-shrink-0 border-r bg-card sticky left-0 z-[4]">
           {TIME_SLOTS.map(({ hour, minutes }) => (
-            <div 
-              key={`${hour}-${minutes}`} 
+            <div
+              key={`${hour}-${minutes}`}
               className="p-2 text-sm text-muted-foreground border-b bg-card h-[60px] flex items-center justify-center"
             >
               {format(new Date().setHours(hour, minutes), 'HH:mm')}
@@ -624,12 +701,12 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
                 columns.map((col: any) => {
                   const isDoctor = 'user_id' in col;
                   const colId = isDoctor ? col.user_id : col.id;
+                  // Use | as separator because colId (UUID) contains hyphens
+                  const slotId = `slot|${format(day, 'yyyy-MM-dd')}|${colId}|${hour}|${minutes}`;
                   return (
-                    <div
-                      key={`${format(day, 'yyyy-MM-dd')}-${colId}-${hour}-${minutes}`}
-                      className="relative border-r h-full p-1 hover:bg-accent/5 transition-colors cursor-pointer overflow-visible flex-1"
-                      onDrop={(e) => handleDrop(e, day, hour, minutes, colId)}
-                      onDragOver={handleDragOver}
+                    <DroppableSlot
+                      key={slotId}
+                      id={slotId}
                       onDoubleClick={() => {
                         const slotDate = new Date(day);
                         slotDate.setHours(hour, minutes, 0, 0);
@@ -685,7 +762,7 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
                           onNoteClick={onAppointmentNoteClick}
                         />
                       ))}
-                    </div>
+                    </DroppableSlot>
                   );
                 })
               ))}
@@ -694,7 +771,7 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
 
           {/* Línea de hora actual */}
           {currentTimePosition !== null && (
-            <div 
+            <div
               className="absolute left-0 right-0 z-[3] pointer-events-none"
               style={{ top: `${currentTimePosition}px` }}
             >
@@ -707,5 +784,20 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
         </div>
       </div>
     </div>
+
+    {/* DragOverlay for visual feedback while dragging */}
+    <DragOverlay dropAnimation={null}>
+      {activeAppointment && (
+        <div className="p-2 rounded-lg border bg-background shadow-xl w-[200px] rotate-2 opacity-90">
+          <p className="font-medium text-sm truncate">
+            {activeAppointment.patient?.first_name} {activeAppointment.patient?.last_name}
+          </p>
+          <p className="text-xs text-muted-foreground truncate">
+            {activeAppointment.reason || activeAppointment.type}
+          </p>
+        </div>
+      )}
+    </DragOverlay>
+    </DndContext>
   );
 }

@@ -6,12 +6,8 @@ import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { UserCheck, Gift, Armchair, StickyNote } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
+import { useDraggable } from '@dnd-kit/core';
+import { CSS } from '@dnd-kit/utilities';
 
 interface DraggableAppointmentBlockProps {
   appointment: Appointment;
@@ -45,7 +41,6 @@ const TYPE_LABELS: Record<string, string> = {
 };
 
 export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick, onNoteClick }: DraggableAppointmentBlockProps) {
-  const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [resizeDirection, setResizeDirection] = useState<'top' | 'bottom' | null>(null);
   const [tempHeight, setTempHeight] = useState<number | null>(null);
@@ -53,6 +48,16 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
   const resizeStartY = useRef<number>(0);
   const resizeStartTime = useRef<Date | null>(null);
   const queryClient = useQueryClient();
+
+  // @dnd-kit draggable
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: appointment.id,
+    data: {
+      appointmentId: appointment.id,
+      currentTime: appointment.starts_at,
+    },
+    disabled: isResizing,
+  });
 
   // Calculate dynamic height based on appointment duration
   const duration = differenceInMinutes(
@@ -112,16 +117,6 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
     },
   });
 
-  const handleDragStart = (e: React.DragEvent) => {
-    setIsDragging(true);
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('appointmentId', appointment.id);
-    e.dataTransfer.setData('currentTime', appointment.starts_at);
-  };
-
-  const handleDragEnd = () => {
-    setIsDragging(false);
-  };
 
   const handleResizeStart = (e: React.MouseEvent, direction: 'top' | 'bottom') => {
     e.stopPropagation();
@@ -215,113 +210,110 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
     : TYPE_LABELS[appointment.type] || appointment.type;
   const typeLabel = appointment.is_courtesy ? `${baseTypeLabel} - cortesía` : baseTypeLabel;
 
-  const tooltipText = `${appointment.patient?.first_name} ${appointment.patient?.last_name}${appointment.reason ? ` - ${appointment.reason}` : ''}`;
+  // Style for drag transform
+  const style = transform ? {
+    transform: CSS.Translate.toString(transform),
+    height: `${displayHeight}px`,
+  } : {
+    height: `${displayHeight}px`,
+  };
 
   return (
-    <TooltipProvider>
-      <Tooltip delayDuration={300}>
-        <TooltipTrigger asChild>
-          <div
-            draggable={!isResizing}
-            onDragStart={handleDragStart}
-            onDragEnd={handleDragEnd}
-            onClick={() => !isResizing && onClick(appointment)}
-            onDoubleClick={() => !isResizing && onDoubleClick?.(appointment)}
-            style={{ height: `${displayHeight}px` }}
-            className={`
-              absolute inset-x-1 top-0 overflow-hidden
-              px-2 py-1.5 rounded border-l-4 transition-all leading-tight group
-              ${colorClass}
-              ${isDragging ? 'opacity-50' : 'opacity-100'}
-              ${isResizing ? 'cursor-ns-resize' : 'cursor-move'}
-              hover:shadow-md z-[2]
-            `}
+    <div
+      ref={setNodeRef}
+      {...listeners}
+      {...attributes}
+      onClick={() => !isResizing && !isDragging && onClick(appointment)}
+      onDoubleClick={() => !isResizing && !isDragging && onDoubleClick?.(appointment)}
+      style={style}
+      className={`
+        relative px-2 py-1.5 mb-0.5 rounded border-l-4 transition-shadow leading-tight group touch-none
+        ${colorClass}
+        ${isDragging ? 'opacity-50 z-50 shadow-xl' : 'opacity-100'}
+        ${isResizing ? 'cursor-ns-resize' : 'cursor-grab active:cursor-grabbing'}
+        hover:shadow-md
+      `}
+      title={`${appointment.patient?.first_name} ${appointment.patient?.last_name} - ${appointment.reason || ''}`}
+    >
+      {isResizing && tempHeight && (
+        <div className="absolute top-1 right-1 bg-primary text-primary-foreground text-xs px-2 py-0.5 rounded shadow-lg z-20 whitespace-nowrap font-medium">
+          {Math.round((tempHeight / 60) * 15)} min
+        </div>
+      )}
+
+      <div className="space-y-0.5">
+        {/* FILA 1: Nombre del paciente + Badge cortesía + Doctor externo + Icono de nota */}
+        <div className="flex items-center justify-between gap-1 leading-tight">
+          <div className="flex items-center gap-1 flex-1 min-w-0">
+            <span className="text-base font-medium truncate">
+              {appointment.patient?.first_name} {appointment.patient?.last_name}
+            </span>
+            {(appointment as any).external_doctor_name && (
+              <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4 bg-orange-100 text-orange-700 border-orange-300">
+                🏥 {(appointment as any).external_doctor_name}
+              </Badge>
+            )}
+            {appointment.is_courtesy && (
+              <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4 bg-purple-100 text-purple-700 border-purple-300">
+                <Gift className="h-3 w-3 mr-0.5" />
+                Cortesía
+              </Badge>
+            )}
+          </div>
+
+          {/* Icono de nota - SIEMPRE en la fila superior a la derecha */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onNoteClick?.(appointment);
+            }}
+            className="hover:scale-110 transition-transform flex-shrink-0"
+            title={appointment.reception_notes
+              ? `Nota: ${appointment.reception_notes.substring(0, 50)}${appointment.reception_notes.length > 50 ? '...' : ''}`
+              : "Agregar nota de recepción"
+            }
           >
-            {isResizing && tempHeight && (
-              <div className="absolute top-1 right-1 bg-primary text-primary-foreground text-xs px-2 py-0.5 rounded shadow-lg z-20 whitespace-nowrap font-medium">
-                {Math.round((tempHeight / 60) * 15)} min
+            <StickyNote
+              className={`h-4 w-4 ${
+                appointment.reception_notes
+                  ? 'text-amber-500'
+                  : 'text-gray-300'
+              }`}
+            />
+          </button>
+        </div>
+
+        {/* FILA 2: Tipo de cita + Status + Iconos de estado */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-muted-foreground text-sm truncate leading-tight flex-1">
+            {baseTypeLabel}
+          </div>
+
+          {/* Iconos de estado - en la fila inferior a la derecha */}
+          <div className="flex items-center gap-1 flex-shrink-0">
+            {appointment.status === 'checked_in' && (
+              <div title="Paciente en sala de espera">
+                <Armchair className="h-4 w-4 text-blue-600" />
               </div>
             )}
-
-            <div className="space-y-0.5">
-              {/* FILA 1: Nombre del paciente + Badge cortesía + Doctor externo + Icono de nota */}
-              <div className="flex items-center justify-between gap-1 leading-tight">
-                <div className="flex items-center gap-1 flex-1 min-w-0">
-                  <span className="text-base font-medium truncate">
-                    {appointment.patient?.first_name} {appointment.patient?.last_name}
-                  </span>
-                  {(appointment as any).external_doctor_name && (
-                    <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4 bg-orange-100 text-orange-700 border-orange-300">
-                      🏥 {(appointment as any).external_doctor_name}
-                    </Badge>
-                  )}
-                  {appointment.is_courtesy && (
-                    <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4 bg-purple-100 text-purple-700 border-purple-300">
-                      <Gift className="h-3 w-3 mr-0.5" />
-                      Cortesía
-                    </Badge>
-                  )}
-                </div>
-
-                {/* Icono de nota - SIEMPRE en la fila superior a la derecha */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onNoteClick?.(appointment);
-                  }}
-                  className="hover:scale-110 transition-transform flex-shrink-0"
-                  title={appointment.reception_notes
-                    ? `Nota: ${appointment.reception_notes.substring(0, 50)}${appointment.reception_notes.length > 50 ? '...' : ''}`
-                    : "Agregar nota de recepción"
-                  }
-                >
-                  <StickyNote
-                    className={`h-4 w-4 ${
-                      appointment.reception_notes
-                        ? 'text-amber-500'
-                        : 'text-gray-300'
-                    }`}
-                  />
-                </button>
+            {appointment.status === 'preconsulta_ready' && (
+              <div title="Preconsulta lista - Listo para atender">
+                <UserCheck className="h-4 w-4 text-green-600" />
               </div>
-
-              {/* FILA 2: Tipo de cita + Status + Iconos de estado */}
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-muted-foreground text-sm truncate leading-tight flex-1">
-                  {baseTypeLabel}
-                </div>
-
-                {/* Iconos de estado - en la fila inferior a la derecha */}
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  {appointment.status === 'checked_in' && (
-                    <div title="Paciente en sala de espera">
-                      <Armchair className="h-4 w-4 text-blue-600" />
-                    </div>
-                  )}
-                  {appointment.status === 'preconsulta_ready' && (
-                    <div title="Preconsulta lista - Listo para atender">
-                      <UserCheck className="h-4 w-4 text-green-600" />
-                    </div>
-                  )}
-                  {appointment.status === 'done' && (
-                    <div className="text-sm text-green-600 leading-tight">✓ Atendida</div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Resize handle - Bottom */}
-            <div
-              onMouseDown={(e) => handleResizeStart(e, 'bottom')}
-              className="absolute bottom-0 left-0 right-0 h-2 cursor-ns-resize opacity-0 group-hover:opacity-100 transition-opacity hover:bg-primary/20 z-10"
-              onClick={(e) => e.stopPropagation()}
-            />
+            )}
+            {appointment.status === 'done' && (
+              <div className="text-sm text-green-600 leading-tight">✓ Atendida</div>
+            )}
           </div>
-        </TooltipTrigger>
-        <TooltipContent side="top" className="max-w-xs">
-          <p className="text-sm font-medium">{tooltipText}</p>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+        </div>
+      </div>
+
+      {/* Resize handle - Bottom */}
+      <div
+        onMouseDown={(e) => handleResizeStart(e, 'bottom')}
+        className="absolute bottom-0 left-0 right-0 h-2 cursor-ns-resize opacity-0 group-hover:opacity-100 transition-opacity hover:bg-primary/20 z-10"
+        onClick={(e) => e.stopPropagation()}
+      />
+    </div>
   );
 }
