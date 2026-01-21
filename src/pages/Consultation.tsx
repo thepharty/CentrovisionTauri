@@ -24,6 +24,8 @@ import { clinicStartOfDay, clinicEndOfDay } from '@/lib/timezone';
 import { useClinicalOptions } from '@/hooks/useClinicalOptions';
 import { validateAxisInput } from '@/lib/axisValidation';
 import { cn } from '@/lib/utils';
+import { VoiceDictationFAB } from '@/components/VoiceDictationFAB';
+import { DictationField } from '@/hooks/useVoiceDictation';
 
 export default function Consultation() {
   const { encounterId } = useParams<{ encounterId: string }>();
@@ -2488,11 +2490,41 @@ export default function Consultation() {
       
       {/* Stock Panel */}
       {showStockPanel && (
-        <StockPanel 
-          onClose={() => setShowStockPanel(false)} 
+        <StockPanel
+          onClose={() => setShowStockPanel(false)}
           onSelectItem={handleAddDropToTreatment}
         />
       )}
+
+      {/* Voice Dictation FAB */}
+      <VoiceDictationFAB
+        availableFields={['diagnostico', 'planTratamiento', 'motivoConsulta', 'lamparaOD', 'lamparaOS', 'antecedentesGenerales', 'antecedentesOftalmologicos']}
+        onApplyDictation={(field: DictationField, content: string) => {
+          switch (field) {
+            case 'diagnostico':
+              setDiagnostico(prev => prev ? `${prev}\n${content}` : content);
+              break;
+            case 'planTratamiento':
+              setPlanTratamiento(prev => prev ? `${prev}\n${content}` : content);
+              break;
+            case 'motivoConsulta':
+              setMotivoConsulta(prev => prev ? `${prev}\n${content}` : content);
+              break;
+            case 'lamparaOD':
+              setLamparaOD(prev => prev ? `${prev}. ${content}` : content);
+              break;
+            case 'lamparaOS':
+              setLamparaOS(prev => prev ? `${prev}. ${content}` : content);
+              break;
+            case 'antecedentesGenerales':
+              setAntecedentesGenerales(prev => prev ? `${prev}\n${content}` : content);
+              break;
+            case 'antecedentesOftalmologicos':
+              setAntecedentesOftalmologicos(prev => prev ? `${prev}\n${content}` : content);
+              break;
+          }
+        }}
+      />
     </div>
   );
 }

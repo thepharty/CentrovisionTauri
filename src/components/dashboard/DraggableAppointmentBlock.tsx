@@ -314,7 +314,7 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
                     </div>
                   )}
                   {appointment.status === 'done' && (
-                    <div className={`text-green-600 leading-tight ${compact ? 'text-xs' : 'text-sm'}`}>✓</div>
+                    <div className={`text-green-600 leading-tight ${compact ? 'text-xs' : 'text-sm'}`}>✓ Atendida</div>
                   )}
                 </div>
               </div>

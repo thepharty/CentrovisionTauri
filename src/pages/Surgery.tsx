@@ -24,6 +24,21 @@ import React from 'react';
 import { usePrintPDF } from '@/hooks/usePrintPDF';
 import { PrintPreviewDialog } from '@/components/dashboard/PrintPreviewDialog';
 import { compressImages } from '@/lib/imageCompression';
+import jsPDF from 'jspdf';
+
+// Helper para formatear fechas de forma segura
+const formatConsentDate = (dateString: string | null | undefined, options?: Intl.DateTimeFormatOptions) => {
+  if (!dateString) return 'Fecha no disponible';
+  const date = new Date(dateString);
+  if (isNaN(date.getTime())) return 'Fecha no disponible';
+  return date.toLocaleDateString('es-GT', options || {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+};
 
 export default function Surgery() {
   const { encounterId } = useParams<{ encounterId: string }>();
@@ -70,6 +85,9 @@ export default function Surgery() {
   const [uploadProgress, setUploadProgress] = React.useState(0);
   const [currentUploadingFile, setCurrentUploadingFile] = React.useState('');
   const [fileToDelete, setFileToDelete] = React.useState<{ id: string; path: string } | null>(null);
+
+  // Estado para modal de firma de consentimiento
+  const [isViewingSignature, setIsViewingSignature] = React.useState(false);
 
   // Hook de impresión
   const { generatePDF, isGenerating, htmlContent, clearContent } = usePrintPDF();
@@ -303,6 +321,32 @@ export default function Surgery() {
       return data;
     },
     enabled: !!encounterId,
+  });
+
+  // Query para obtener la firma del consentimiento
+  const { data: consentSignature } = useQuery({
+    queryKey: ['consent-signature', surgery?.id],
+    queryFn: async () => {
+      if (!surgery?.id) return null;
+
+      const { data, error } = await (supabase as any)
+        .from('consent_signatures')
+        .select('*')
+        .eq('surgery_id', surgery.id)
+        .maybeSingle();
+
+      if (error) throw error;
+      return data as {
+        id: string;
+        patient_name: string;
+        witness_name: string;
+        patient_signature: string;
+        witness_signature: string;
+        consent_text: string;
+        created_at: string;
+      } | null;
+    },
+    enabled: !!surgery?.id,
   });
 
   // Cargar datos de la cirugía cuando estén disponibles
@@ -1357,12 +1401,50 @@ export default function Surgery() {
                 )}
               </Button>
             </div>
-            <Textarea 
+            <Textarea
               value={medicacion}
               onChange={(e) => setMedicacion(e.target.value)}
               placeholder="Medicación preoperatoria y postoperatoria..."
               className="min-h-[150px]"
             />
+          </div>
+
+          {/* Consentimiento Informado */}
+          <div className="bg-card rounded-lg border p-6">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-semibold flex items-center gap-2">
+                <FileText className="h-6 w-6" />
+                Consentimiento Informado
+              </h2>
+              {consentSignature ? (
+                <div className="flex items-center gap-3">
+                  <Badge className="bg-green-100 text-green-800 hover:bg-green-100 px-3 py-1">
+                    <Check className="h-4 w-4 mr-1" />
+                    Firmado
+                  </Badge>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsViewingSignature(true)}
+                  >
+                    Ver Firma
+                  </Button>
+                </div>
+              ) : (
+                <Badge variant="secondary" className="px-3 py-1">
+                  Pendiente de firma
+                </Badge>
+              )}
+            </div>
+            {consentSignature && (
+              <div className="mt-4 text-sm text-muted-foreground">
+                <p>Firmado por: <span className="font-medium text-foreground">{consentSignature.patient_name}</span></p>
+                <p>Testigo: <span className="font-medium text-foreground">{consentSignature.witness_name}</span></p>
+                <p>Fecha: <span className="font-medium text-foreground">
+                  {formatConsentDate(consentSignature.created_at)}
+                </span></p>
+              </div>
+            )}
           </div>
 
           {/* Imágenes y Documentos */}
@@ -2241,6 +2323,207 @@ export default function Surgery() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Modal para ver firma de consentimiento */}
+      <Dialog open={isViewingSignature} onOpenChange={setIsViewingSignature}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader className="flex flex-row items-center justify-between">
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5" />
+              Consentimiento Informado Firmado
+            </DialogTitle>
+            {consentSignature && (
+              <Button
+                size="sm"
+                onClick={() => {
+                  try {
+                    const doc = new jsPDF();
+                    const pageWidth = doc.internal.pageSize.getWidth();
+                    let y = 20;
+
+                    doc.setFontSize(18);
+                    doc.setFont('helvetica', 'bold');
+                    doc.text('CONSENTIMIENTO INFORMADO', pageWidth / 2, y, { align: 'center' });
+                    y += 15;
+
+                    doc.setFontSize(11);
+                    doc.setFont('helvetica', 'normal');
+                    doc.setTextColor(100);
+                    doc.text('Paciente:', 20, y);
+                    doc.setTextColor(0);
+                    doc.setFont('helvetica', 'bold');
+                    doc.text(consentSignature.patient_name, 50, y);
+
+                    doc.setFont('helvetica', 'normal');
+                    doc.setTextColor(100);
+                    doc.text('Testigo:', 110, y);
+                    doc.setTextColor(0);
+                    doc.setFont('helvetica', 'bold');
+                    doc.text(consentSignature.witness_name, 135, y);
+                    y += 8;
+
+                    doc.setFont('helvetica', 'normal');
+                    doc.setTextColor(100);
+                    doc.text('Fecha de firma:', 20, y);
+                    doc.setTextColor(0);
+                    doc.text(formatConsentDate(consentSignature.created_at, {
+                      day: '2-digit',
+                      month: 'long',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit'
+                    }), 55, y);
+                    y += 15;
+
+                    doc.setDrawColor(200);
+                    doc.line(20, y, pageWidth - 20, y);
+                    y += 10;
+
+                    doc.setFontSize(12);
+                    doc.setFont('helvetica', 'bold');
+                    doc.text('Documento firmado:', 20, y);
+                    y += 8;
+
+                    doc.setFontSize(10);
+                    doc.setFont('helvetica', 'normal');
+                    const consentLines = doc.splitTextToSize(consentSignature.consent_text, pageWidth - 40);
+
+                    for (const line of consentLines) {
+                      if (y > 250) {
+                        doc.addPage();
+                        y = 20;
+                      }
+                      doc.text(line, 20, y);
+                      y += 5;
+                    }
+                    y += 10;
+
+                    if (y > 200) {
+                      doc.addPage();
+                      y = 20;
+                    }
+
+                    doc.setDrawColor(200);
+                    doc.line(20, y, pageWidth - 20, y);
+                    y += 10;
+
+                    doc.setFontSize(11);
+                    doc.setFont('helvetica', 'bold');
+                    doc.text('Firma del Paciente', 55, y, { align: 'center' });
+                    doc.text('Firma del Testigo', 155, y, { align: 'center' });
+                    y += 5;
+
+                    if (consentSignature.patient_signature) {
+                      try {
+                        doc.addImage(consentSignature.patient_signature, 'PNG', 20, y, 70, 35);
+                      } catch (e) {
+                        console.error('Error agregando firma paciente:', e);
+                      }
+                    }
+                    if (consentSignature.witness_signature) {
+                      try {
+                        doc.addImage(consentSignature.witness_signature, 'PNG', 120, y, 70, 35);
+                      } catch (e) {
+                        console.error('Error agregando firma testigo:', e);
+                      }
+                    }
+                    y += 40;
+
+                    doc.setDrawColor(0);
+                    doc.line(20, y, 90, y);
+                    doc.line(120, y, 190, y);
+                    y += 5;
+
+                    doc.setFontSize(9);
+                    doc.setFont('helvetica', 'normal');
+                    doc.text(consentSignature.patient_name, 55, y, { align: 'center' });
+                    doc.text(consentSignature.witness_name, 155, y, { align: 'center' });
+
+                    doc.save(`Consentimiento_${consentSignature.patient_name.replace(/\s+/g, '_')}.pdf`);
+                    toast.success('PDF descargado exitosamente');
+                  } catch (error) {
+                    console.error('Error generando PDF:', error);
+                    toast.error('Error al generar el PDF');
+                  }
+                }}
+                className="gap-2"
+              >
+                <Download className="h-4 w-4" />
+                Descargar PDF
+              </Button>
+            )}
+          </DialogHeader>
+
+          {consentSignature && (
+            <div className="space-y-6">
+              {/* Información de la firma */}
+              <div className="grid grid-cols-2 gap-4 p-4 bg-muted rounded-lg">
+                <div>
+                  <p className="text-sm text-muted-foreground">Paciente</p>
+                  <p className="font-medium">{consentSignature.patient_name}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Testigo</p>
+                  <p className="font-medium">{consentSignature.witness_name}</p>
+                </div>
+                <div className="col-span-2">
+                  <p className="text-sm text-muted-foreground">Fecha de firma</p>
+                  <p className="font-medium">
+                    {formatConsentDate(consentSignature.created_at, {
+                      weekday: 'long',
+                      day: '2-digit',
+                      month: 'long',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit'
+                    })}
+                  </p>
+                </div>
+              </div>
+
+              {/* Texto del consentimiento */}
+              <div>
+                <h3 className="font-semibold mb-2">Documento firmado</h3>
+                <ScrollArea className="h-48 rounded-lg border p-4 bg-gray-50">
+                  <pre className="text-sm whitespace-pre-wrap font-sans text-gray-700">
+                    {consentSignature.consent_text}
+                  </pre>
+                </ScrollArea>
+              </div>
+
+              {/* Firmas */}
+              <div className="grid grid-cols-2 gap-6">
+                <div>
+                  <h3 className="font-semibold mb-2 text-center">Firma del Paciente</h3>
+                  <div className="border rounded-lg p-2 bg-white">
+                    <img
+                      src={consentSignature.patient_signature}
+                      alt="Firma del paciente"
+                      className="w-full h-32 object-contain"
+                    />
+                  </div>
+                  <p className="text-center text-sm text-muted-foreground mt-1">
+                    {consentSignature.patient_name}
+                  </p>
+                </div>
+                <div>
+                  <h3 className="font-semibold mb-2 text-center">Firma del Testigo</h3>
+                  <div className="border rounded-lg p-2 bg-white">
+                    <img
+                      src={consentSignature.witness_signature}
+                      alt="Firma del testigo"
+                      className="w-full h-32 object-contain"
+                    />
+                  </div>
+                  <p className="text-center text-sm text-muted-foreground mt-1">
+                    {consentSignature.witness_name}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

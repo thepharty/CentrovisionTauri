@@ -56,8 +56,66 @@ export function DoctorDetailDialog({
     enabled: open && !!doctorId,
   });
 
+  // Query para obtener estudios referidos por este doctor
+  const { data: referredStudies } = useQuery({
+    queryKey: ['referred-studies', doctorId, localStartDate.toISOString(), localEndDate.toISOString()],
+    queryFn: async () => {
+      // Primero buscar el referring_doctor_id asociado a este doctor interno
+      const { data: refDoc } = await supabase
+        .from('referring_doctors')
+        .select('id')
+        .eq('internal_profile_id', doctorId)
+        .single();
+
+      if (!refDoc) return [];
+
+      // Luego buscar los estudios referidos por este doctor en el rango de fechas
+      const { data: studies, error } = await supabase
+        .from('studies')
+        .select(`
+          id,
+          title,
+          eye_side,
+          comments,
+          created_at,
+          patient:patients(id, first_name, last_name, patient_code),
+          study_files(id)
+        `)
+        .eq('referring_doctor_id', refDoc.id)
+        .gte('created_at', localStartDate.toISOString().split('T')[0])
+        .lte('created_at', localEndDate.toISOString().split('T')[0] + 'T23:59:59')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      return studies || [];
+    },
+    enabled: open && !!doctorId,
+  });
+
+  // Transformar estudios referidos al mismo formato que las citas
+  const transformedStudies = (referredStudies || []).map((study: any) => ({
+    appointment_id: `study-${study.id}`,
+    patient_code: study.patient?.patient_code || '-',
+    patient_name: study.patient
+      ? `${study.patient.first_name} ${study.patient.last_name}`.toUpperCase()
+      : '-',
+    appointment_type: 'estudio_referido',
+    appointment_date: study.created_at,
+    is_invoiced: false,
+    is_courtesy: false,
+    invoice_amount: 0,
+    surgery_type: null,
+    procedure_type: null,
+    study_title: study.title,
+    study_eye_side: study.eye_side,
+    study_files_count: study.study_files?.length || 0,
+  }));
+
+  // Combinar citas con estudios referidos
+  const allData = [...(activityDetail || []), ...transformedStudies];
+
   // Agrupar datos por tipo de cita
-  const groupedData = activityDetail?.reduce((acc: any, item: any) => {
+  const groupedData = allData.reduce((acc: any, item: any) => {
     const type = item.appointment_type;
     if (!acc[type]) {
       acc[type] = [];
@@ -69,7 +127,7 @@ export function DoctorDetailDialog({
   // Filtrar datos por búsqueda
   const filterData = (data: any[]) => {
     if (!searchTerm) return data;
-    return data.filter((item: any) => 
+    return data.filter((item: any) =>
       item.patient_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       item.patient_code.toLowerCase().includes(searchTerm.toLowerCase())
     );
@@ -77,8 +135,8 @@ export function DoctorDetailDialog({
 
   // Obtener datos según tab activo
   const getFilteredData = () => {
-    if (!activityDetail) return [];
-    if (activeTab === 'all') return filterData(activityDetail);
+    if (!allData || allData.length === 0) return [];
+    if (activeTab === 'all') return filterData(allData);
     return filterData(groupedData?.[activeTab] || []);
   };
 
@@ -103,6 +161,7 @@ export function DoctorDetailDialog({
     'procedimiento': 'Procedimiento',
     'cirugia': 'Cirugía',
     'estudio': 'Estudio',
+    'estudio_referido': 'Estudio Referido',
   };
 
   // Obtener tabs dinámicamente
@@ -321,11 +380,13 @@ export function DoctorDetailDialog({
                           </Badge>
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">
-                          {item.appointment_type === 'cirugia' && item.surgery_type 
-                            ? item.surgery_type 
-                            : item.appointment_type === 'procedimiento' && item.procedure_type 
-                              ? item.procedure_type 
-                              : ''}
+                          {item.appointment_type === 'cirugia' && item.surgery_type
+                            ? item.surgery_type
+                            : item.appointment_type === 'procedimiento' && item.procedure_type
+                              ? item.procedure_type
+                              : item.appointment_type === 'estudio_referido' && item.study_title
+                                ? `${item.study_title} (${item.study_eye_side === 'OD' ? 'OD' : item.study_eye_side === 'OI' ? 'OI' : 'AO'})`
+                                : ''}
                         </TableCell>
                         <TableCell className="text-sm">
                           {format(new Date(item.appointment_date), 'dd/MM/yyyy HH:mm', { locale: es })}

@@ -6,6 +6,14 @@
     "main"
   ],
   "permissions": [
-    "core:default"
+    "core:default",
+    "stt:allow-is-available",
+    "stt:allow-get-supported-languages",
+    "stt:allow-check-permission",
+    "stt:allow-request-permission",
+    "stt:allow-start-listening",
+    "stt:allow-stop-listening",
+    "stt:allow-register-listener",
+    "stt:allow-remove-listener"
   ]
 }

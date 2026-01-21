@@ -783,7 +783,7 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <Label htmlFor="patient_dob">Fecha de nacimiento</Label>
-                      <Input id="patient_dob" type="date" {...register('patient_dob')} />
+                      <Input id="patient_dob" type="date" min="1900-01-01" max={new Date().toISOString().split('T')[0]} {...register('patient_dob')} />
                     </div>
                     <div>
                       <Label htmlFor="patient_phone">Teléfono</Label>

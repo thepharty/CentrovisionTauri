@@ -270,8 +270,8 @@ export default function ConsentSignatures() {
 
   // Vista de firma de consentimiento
   return (
-    <div className="min-h-screen bg-gradient-to-b from-blue-50 to-white p-4">
-      <div className="max-w-3xl mx-auto">
+    <div className="min-h-screen bg-gradient-to-b from-blue-50 to-white px-8 py-12">
+      <div className="max-w-4xl mx-auto">
         {/* Header */}
         <div className="flex items-center gap-4 mb-6">
           <Button variant="ghost" size="icon" onClick={resetForm}>
@@ -286,13 +286,13 @@ export default function ConsentSignatures() {
         </div>
 
         {/* Contenido del consentimiento */}
-        <Card className="mb-4">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Lea el siguiente documento</CardTitle>
+        <Card className="mb-6">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-xl">Lea el siguiente documento</CardTitle>
           </CardHeader>
           <CardContent>
-            <ScrollArea className="h-48 rounded border p-4 bg-gray-50">
-              <pre className="text-sm whitespace-pre-wrap font-sans">{CONSENT_TEXT}</pre>
+            <ScrollArea className="h-[450px] rounded-xl border-2 p-8 bg-white">
+              <pre className="text-xl leading-loose whitespace-pre-wrap font-sans text-gray-800">{CONSENT_TEXT}</pre>
             </ScrollArea>
           </CardContent>
         </Card>
