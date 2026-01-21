@@ -1178,6 +1178,207 @@ function generateStudiesHTML(data: PrintPDFData): string {
 /**
  * Generate HTML for Cash Closure Report
  */
+// Consent Signature Data Interface
+export interface ConsentSignatureData {
+  patientName: string;
+  surgeryType: string;
+  eyeSide: string;
+  date: string;
+  consentText: string;
+  patientSignature: string; // Base64 PNG
+  patientSignedName: string;
+  witnessSignature: string; // Base64 PNG
+  witnessName: string;
+  branchName?: string;
+}
+
+/**
+ * Generate HTML for Consent Signature Document
+ */
+export function generateConsentSignatureHTML(data: ConsentSignatureData): string {
+  const {
+    patientName,
+    surgeryType,
+    eyeSide,
+    date,
+    consentText,
+    patientSignature,
+    patientSignedName,
+    witnessSignature,
+    witnessName,
+    branchName
+  } = data;
+
+  const eyeMap: { [key: string]: string } = {
+    'OD': 'Ojo Derecho',
+    'OS': 'Ojo Izquierdo',
+    'OU': 'Ambos Ojos'
+  };
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Consentimiento Informado - ${patientName}</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    @page {
+      size: letter;
+      margin: 20mm;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      font-size: 10pt;
+      line-height: 1.4;
+      color: #1a1a1a;
+      background: #ffffff;
+      padding: 20px;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 20px;
+      padding-bottom: 15px;
+      border-bottom: 2px solid #4F7FFF;
+    }
+    .header h1 {
+      font-size: 16pt;
+      color: #4F7FFF;
+      margin-bottom: 5px;
+    }
+    .header h2 {
+      font-size: 12pt;
+      color: #374151;
+      font-weight: normal;
+    }
+    .header-info {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 15px;
+      font-size: 10pt;
+      color: #555;
+    }
+    .header-info div {
+      text-align: left;
+    }
+    .header-info strong {
+      color: #374151;
+    }
+    .consent-text {
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 15px;
+      margin: 20px 0;
+      font-size: 9pt;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      max-height: none;
+    }
+    .signatures-container {
+      display: flex;
+      justify-content: space-between;
+      gap: 40px;
+      margin-top: 30px;
+    }
+    .signature-box {
+      flex: 1;
+      text-align: center;
+    }
+    .signature-label {
+      font-weight: 600;
+      font-size: 10pt;
+      color: #374151;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .signature-image {
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      padding: 10px;
+      background: #ffffff;
+      min-height: 80px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .signature-image img {
+      max-width: 100%;
+      max-height: 70px;
+      object-fit: contain;
+    }
+    .signature-name {
+      margin-top: 8px;
+      font-size: 10pt;
+      color: #1f2937;
+      border-top: 1px solid #374151;
+      padding-top: 5px;
+    }
+    .footer {
+      margin-top: 30px;
+      padding-top: 15px;
+      border-top: 1px solid #e5e7eb;
+      text-align: center;
+      font-size: 8pt;
+      color: #6b7280;
+    }
+    @media print {
+      body {
+        padding: 0;
+      }
+      * {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+        color-adjust: exact !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>CONSENTIMIENTO INFORMADO</h1>
+    <h2>${surgeryType} - ${eyeMap[eyeSide] || eyeSide}</h2>
+    <div class="header-info">
+      <div><strong>Paciente:</strong> ${patientName}</div>
+      <div><strong>Fecha:</strong> ${date}</div>
+      ${branchName ? `<div><strong>Sucursal:</strong> ${branchName}</div>` : ''}
+    </div>
+  </div>
+
+  <div class="consent-text">${consentText}</div>
+
+  <div class="signatures-container">
+    <div class="signature-box">
+      <div class="signature-label">Firma del Paciente</div>
+      <div class="signature-image">
+        <img src="${patientSignature}" alt="Firma del paciente" />
+      </div>
+      <div class="signature-name">${patientSignedName}</div>
+    </div>
+
+    <div class="signature-box">
+      <div class="signature-label">Firma del Testigo</div>
+      <div class="signature-image">
+        <img src="${witnessSignature}" alt="Firma del testigo" />
+      </div>
+      <div class="signature-name">${witnessName}</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <p>Documento generado electrónicamente por CentroVisión EHR</p>
+    <p>Fecha y hora de firma: ${new Date().toLocaleString('es-HN')}</p>
+  </div>
+</body>
+</html>
+`;
+}
+
 export function generateCashClosureHTML(data: CashClosureData): string {
   const {
     date,

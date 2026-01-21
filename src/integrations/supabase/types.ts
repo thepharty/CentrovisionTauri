@@ -238,7 +238,9 @@ export type Database = {
           created_at: string
           id: string
           name: string
+          pdf_header_url: string | null
           phone: string | null
+          theme_primary_hsl: string | null
           updated_at: string
         }
         Insert: {
@@ -248,7 +250,9 @@ export type Database = {
           created_at?: string
           id?: string
           name: string
+          pdf_header_url?: string | null
           phone?: string | null
+          theme_primary_hsl?: string | null
           updated_at?: string
         }
         Update: {
@@ -258,7 +262,9 @@ export type Database = {
           created_at?: string
           id?: string
           name?: string
+          pdf_header_url?: string | null
           phone?: string | null
+          theme_primary_hsl?: string | null
           updated_at?: string
         }
         Relationships: []
@@ -1811,6 +1817,41 @@ export type Database = {
         }
         Relationships: []
       }
+      referring_doctors: {
+        Row: {
+          id: string
+          name: string
+          is_internal: boolean | null
+          internal_profile_id: string | null
+          created_at: string | null
+          active: boolean | null
+        }
+        Insert: {
+          id?: string
+          name: string
+          is_internal?: boolean | null
+          internal_profile_id?: string | null
+          created_at?: string | null
+          active?: boolean | null
+        }
+        Update: {
+          id?: string
+          name?: string
+          is_internal?: boolean | null
+          internal_profile_id?: string | null
+          created_at?: string | null
+          active?: boolean | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "referring_doctors_internal_profile_id_fkey"
+            columns: ["internal_profile_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+        ]
+      }
       studies: {
         Row: {
           appointment_id: string | null
@@ -1819,6 +1860,7 @@ export type Database = {
           eye_side: Database["public"]["Enums"]["eye_side"]
           id: string
           patient_id: string
+          referring_doctor_id: string | null
           title: string
           updated_at: string
         }
@@ -1829,6 +1871,7 @@ export type Database = {
           eye_side?: Database["public"]["Enums"]["eye_side"]
           id?: string
           patient_id: string
+          referring_doctor_id?: string | null
           title: string
           updated_at?: string
         }
@@ -1839,6 +1882,7 @@ export type Database = {
           eye_side?: Database["public"]["Enums"]["eye_side"]
           id?: string
           patient_id?: string
+          referring_doctor_id?: string | null
           title?: string
           updated_at?: string
         }
@@ -1855,6 +1899,13 @@ export type Database = {
             columns: ["patient_id"]
             isOneToOne: false
             referencedRelation: "patients"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "studies_referring_doctor_id_fkey"
+            columns: ["referring_doctor_id"]
+            isOneToOne: false
+            referencedRelation: "referring_doctors"
             referencedColumns: ["id"]
           },
         ]

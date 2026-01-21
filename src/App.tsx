@@ -22,6 +22,7 @@ import ViewEstudios from "./pages/ViewEstudios";
 import Research from "./pages/Research";
 import CRM from "./pages/CRM";
 import InventarioSala from "./pages/InventarioSala";
+import ConsentSignatures from "./pages/ConsentSignatures";
 import NotFound from "./pages/NotFound";
 import Index from "./pages/Index";
 
@@ -151,6 +152,14 @@ const App = () => (
               element={
                 <ProtectedRoute allowedRoles={['admin', 'nurse']}>
                   <InventarioSala />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/firmas"
+              element={
+                <ProtectedRoute allowedRoles={['admin', 'recepcion', 'enfermeria']}>
+                  <ConsentSignatures />
                 </ProtectedRoute>
               }
             />

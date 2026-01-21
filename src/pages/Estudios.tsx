@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from 'react-router-dom';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
@@ -8,13 +8,15 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { ArrowLeft, Save, Upload, X, FileImage, Video, Loader2, FileText, MapPin, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Save, Upload, X, FileImage, Video, Loader2, FileText, MapPin, CheckCircle2, Search, Plus, UserRound } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import { differenceInYears } from 'date-fns';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { compressImages } from '@/lib/imageCompression';
 import { PdfThumbnail } from '@/components/pdf/PdfThumbnail';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command';
 
 type SavedFile = {
   id: string;
@@ -38,6 +40,11 @@ export default function Estudios() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [currentUploadingFile, setCurrentUploadingFile] = useState<string>('');
   const [fileToDelete, setFileToDelete] = useState<{ id: string; path: string } | null>(null);
+
+  // Médico referidor
+  const [referringDoctorId, setReferringDoctorId] = useState<string | null>(null);
+  const [referringDoctorSearch, setReferringDoctorSearch] = useState('');
+  const [referringDoctorOpen, setReferringDoctorOpen] = useState(false);
 
   // Cargar estudio existente
   const { data: existingStudy, isLoading } = useQuery({
@@ -69,6 +76,151 @@ export default function Estudios() {
     },
     enabled: !!appointmentId,
   });
+
+  // Cargar médicos referidores (externos + doctores internos del sistema)
+  const { data: referringDoctors = [] } = useQuery({
+    queryKey: ['referring_doctors_combined'],
+    queryFn: async () => {
+      // 1. Obtener médicos externos de referring_doctors
+      const { data: externalDoctors, error: extError } = await supabase
+        .from('referring_doctors')
+        .select('*')
+        .eq('active', true)
+        .order('name');
+
+      if (extError) throw extError;
+
+      // 2. Obtener doctores internos del sistema (profiles con rol doctor)
+      const { data: doctorRoles, error: rolesError } = await supabase
+        .from('user_roles')
+        .select('user_id')
+        .eq('role', 'doctor');
+
+      if (rolesError) throw rolesError;
+
+      // Obtener los profiles de los doctores
+      const doctorUserIds = (doctorRoles || []).map(r => r.user_id);
+      let internalDoctors: any[] = [];
+
+      if (doctorUserIds.length > 0) {
+        const { data: profiles, error: profError } = await supabase
+          .from('profiles')
+          .select('user_id, full_name')
+          .in('user_id', doctorUserIds);
+
+        if (profError) throw profError;
+        internalDoctors = profiles || [];
+      }
+
+      // 3. Combinar ambas listas
+      const externals = (externalDoctors || []).map(d => ({
+        id: d.id,
+        name: d.name,
+        is_internal: d.is_internal || false,
+        internal_profile_id: d.internal_profile_id,
+      }));
+
+      // Mapear doctores internos al formato de referring_doctors
+      const internals = (internalDoctors || []).map((d: any) => ({
+        id: `internal_${d.user_id}`, // Prefijo para diferenciar
+        name: d.full_name,
+        is_internal: true,
+        internal_profile_id: d.user_id,
+      }));
+
+      // Filtrar internos que ya están en referring_doctors para evitar duplicados
+      const existingInternalIds = externals
+        .filter(e => e.is_internal && e.internal_profile_id)
+        .map(e => e.internal_profile_id);
+
+      const uniqueInternals = internals.filter(
+        (i: any) => !existingInternalIds.includes(i.internal_profile_id)
+      );
+
+      // Combinar: primero internos, luego externos
+      return [...uniqueInternals, ...externals].sort((a, b) =>
+        a.name.localeCompare(b.name)
+      );
+    },
+  });
+
+  // Filtrar médicos por búsqueda
+  const filteredDoctors = useMemo(() => {
+    if (!referringDoctorSearch.trim()) return referringDoctors;
+    const search = referringDoctorSearch.toLowerCase();
+    return referringDoctors.filter(d => d.name.toLowerCase().includes(search));
+  }, [referringDoctors, referringDoctorSearch]);
+
+  // Obtener el nombre del médico seleccionado
+  const selectedDoctorName = useMemo(() => {
+    if (!referringDoctorId) return null;
+    const doctor = referringDoctors.find(d => d.id === referringDoctorId);
+    return doctor?.name || null;
+  }, [referringDoctorId, referringDoctors]);
+
+  // Mutation para crear nuevo médico referidor externo
+  const createReferringDoctorMutation = useMutation({
+    mutationFn: async (name: string) => {
+      const { data, error } = await supabase
+        .from('referring_doctors')
+        .insert({ name, is_internal: false })
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['referring_doctors_combined'] });
+      setReferringDoctorId(data.id);
+      setReferringDoctorOpen(false);
+      setReferringDoctorSearch('');
+      toast.success(`Médico "${data.name}" agregado`);
+    },
+    onError: (error: any) => {
+      toast.error('Error al agregar médico: ' + error.message);
+    },
+  });
+
+  // Función para seleccionar un doctor (maneja internos y externos)
+  const handleSelectDoctor = async (doctor: any) => {
+    // Si es un doctor interno (con prefijo internal_), crear registro en referring_doctors
+    if (doctor.id.startsWith('internal_')) {
+      // Verificar si ya existe en referring_doctors
+      const { data: existing } = await supabase
+        .from('referring_doctors')
+        .select('id')
+        .eq('internal_profile_id', doctor.internal_profile_id)
+        .single();
+
+      if (existing) {
+        setReferringDoctorId(existing.id);
+      } else {
+        // Crear nuevo registro para el doctor interno
+        const { data: newDoc, error } = await supabase
+          .from('referring_doctors')
+          .insert({
+            name: doctor.name,
+            is_internal: true,
+            internal_profile_id: doctor.internal_profile_id,
+          })
+          .select()
+          .single();
+
+        if (error) {
+          toast.error('Error al registrar médico interno');
+          return;
+        }
+        setReferringDoctorId(newDoc.id);
+        queryClient.invalidateQueries({ queryKey: ['referring_doctors_combined'] });
+      }
+    } else {
+      // Es un médico externo, usar directamente el ID
+      setReferringDoctorId(doctor.id);
+    }
+    setReferringDoctorOpen(false);
+    setReferringDoctorSearch('');
+  };
 
   const patient = appointment?.patient;
 
@@ -109,6 +261,7 @@ export default function Estudios() {
         setEyeSide(existingStudy.eye_side as 'OD' | 'OI' | 'OU');
         setComments(existingStudy.comments || '');
         setExistingStudyId(existingStudy.id);
+        setReferringDoctorId(existingStudy.referring_doctor_id || null);
 
         // Generar URLs firmadas para cada archivo
         const filesWithUrls = await Promise.all(
@@ -120,7 +273,7 @@ export default function Estudios() {
         setSavedFiles(filesWithUrls);
       }
     };
-    
+
     loadStudyData();
   }, [existingStudy]);
 
@@ -217,6 +370,7 @@ export default function Estudios() {
             title,
             eye_side: eyeSide as any,
             comments: comments || null,
+            referring_doctor_id: referringDoctorId,
           })
           .eq('id', existingStudyId);
 
@@ -240,6 +394,7 @@ export default function Estudios() {
             title,
             eye_side: eyeSide as any,
             comments: comments || null,
+            referring_doctor_id: referringDoctorId,
           } as any)
           .select()
           .single();
@@ -309,16 +464,6 @@ export default function Estudios() {
       return <Video className="h-8 w-8 text-primary" />;
     }
     if (file.type === 'application/pdf') {
-      return <FileText className="h-8 w-8 text-primary" />;
-    }
-    return <FileImage className="h-8 w-8 text-primary" />;
-  };
-
-  const getSavedFileIcon = (mimeType: string | null) => {
-    if (mimeType?.startsWith('video/')) {
-      return <Video className="h-8 w-8 text-primary" />;
-    }
-    if (mimeType === 'application/pdf') {
       return <FileText className="h-8 w-8 text-primary" />;
     }
     return <FileImage className="h-8 w-8 text-primary" />;
@@ -534,6 +679,106 @@ export default function Estudios() {
                   <SelectItem value="OU">OU (Ambos Ojos)</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+
+            {/* Médico que Refiere */}
+            <div>
+              <Label>Médico que Refiere</Label>
+              <Popover open={referringDoctorOpen} onOpenChange={setReferringDoctorOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={referringDoctorOpen}
+                    className="w-full justify-between font-normal"
+                  >
+                    {selectedDoctorName ? (
+                      <span className="flex items-center gap-2">
+                        <UserRound className="h-4 w-4 text-muted-foreground" />
+                        {selectedDoctorName}
+                        {referringDoctors.find(d => d.id === referringDoctorId)?.is_internal && (
+                          <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded">interno</span>
+                        )}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground flex items-center gap-2">
+                        <Search className="h-4 w-4" />
+                        Buscar o agregar médico...
+                      </span>
+                    )}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+                  <Command shouldFilter={false}>
+                    <CommandInput
+                      placeholder="Buscar médico..."
+                      value={referringDoctorSearch}
+                      onValueChange={setReferringDoctorSearch}
+                    />
+                    <CommandList>
+                      <CommandEmpty>
+                        {referringDoctorSearch.trim() ? (
+                          <div className="py-2 px-2">
+                            <p className="text-sm text-muted-foreground mb-2">No se encontró "{referringDoctorSearch}"</p>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full gap-2"
+                              onClick={() => createReferringDoctorMutation.mutate(referringDoctorSearch.trim())}
+                              disabled={createReferringDoctorMutation.isPending}
+                            >
+                              <Plus className="h-4 w-4" />
+                              Agregar "{referringDoctorSearch.trim()}"
+                            </Button>
+                          </div>
+                        ) : (
+                          <p className="text-sm text-muted-foreground">Escribe para buscar</p>
+                        )}
+                      </CommandEmpty>
+                      <CommandGroup>
+                        {filteredDoctors.map((doctor) => (
+                          <CommandItem
+                            key={doctor.id}
+                            value={doctor.id}
+                            onSelect={() => handleSelectDoctor(doctor)}
+                          >
+                            <UserRound className="h-4 w-4 mr-2 text-muted-foreground" />
+                            <span>{doctor.name}</span>
+                            {doctor.is_internal && (
+                              <span className="ml-auto text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded">interno</span>
+                            )}
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                      {referringDoctorSearch.trim() && filteredDoctors.length > 0 && (
+                        <>
+                          <CommandSeparator />
+                          <CommandGroup>
+                            <CommandItem
+                              onSelect={() => createReferringDoctorMutation.mutate(referringDoctorSearch.trim())}
+                              disabled={createReferringDoctorMutation.isPending}
+                            >
+                              <Plus className="h-4 w-4 mr-2" />
+                              Agregar "{referringDoctorSearch.trim()}" como nuevo
+                            </CommandItem>
+                          </CommandGroup>
+                        </>
+                      )}
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+              {referringDoctorId && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="mt-1 h-auto py-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => setReferringDoctorId(null)}
+                >
+                  <X className="h-3 w-3 mr-1" />
+                  Quitar médico
+                </Button>
+              )}
             </div>
           </CardContent>
         </Card>

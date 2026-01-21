@@ -9,6 +9,8 @@ interface Branch {
   address?: string;
   phone?: string;
   active: boolean;
+  theme_primary_hsl?: string | null;
+  pdf_header_url?: string | null;
 }
 
 interface BranchContextType {
@@ -30,6 +32,21 @@ export const useBranch = () => useContext(BranchContext);
 // Helper to check if a branch ID is valid (non-null/undefined)
 export const isValidBranchId = (branchId: string | null | undefined): branchId is string => {
   return !!branchId;
+};
+
+// Color primario por defecto (azul de Tailwind/shadcn)
+const DEFAULT_PRIMARY_HSL = '221 74% 54%';
+
+// Aplica el tema de la sucursal a la app
+const applyBranchTheme = (branch: Branch | null) => {
+  const hsl = branch?.theme_primary_hsl || DEFAULT_PRIMARY_HSL;
+  document.documentElement.style.setProperty('--primary', hsl);
+  // Para colores primarios (típicamente saturados), el texto blanco funciona mejor
+  // Solo usar texto oscuro si el color es muy claro (lightness > 70%)
+  const parts = hsl.split(' ');
+  const lightness = parseFloat(parts[2] || '54');
+  const foreground = lightness > 70 ? '222.2 47.4% 11.2%' : '0 0% 100%';
+  document.documentElement.style.setProperty('--primary-foreground', foreground);
 };
 
 export const BranchProvider = ({ children }: { children: ReactNode }) => {
@@ -59,6 +76,7 @@ export const BranchProvider = ({ children }: { children: ReactNode }) => {
       const saved = branches.find(b => b.id === savedBranchId);
       if (saved) {
         setCurrentBranchState(saved);
+        applyBranchTheme(saved);
         return;
       } else {
         // Invalid branch ID in localStorage, remove it
@@ -72,12 +90,16 @@ export const BranchProvider = ({ children }: { children: ReactNode }) => {
     if (defaultBranch) {
       setCurrentBranchState(defaultBranch);
       localStorage.setItem('current-branch-id', defaultBranch.id);
+      applyBranchTheme(defaultBranch);
     }
   }, [branches]);
 
   const setCurrentBranch = (branch: Branch) => {
     setCurrentBranchState(branch);
     localStorage.setItem('current-branch-id', branch.id);
+
+    // Aplicar tema de la sucursal
+    applyBranchTheme(branch);
 
     // Invalidate specific queries that depend on branch
     // Use setTimeout to avoid navigation interruption
