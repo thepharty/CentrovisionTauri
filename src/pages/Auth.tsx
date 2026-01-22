@@ -286,7 +286,10 @@ export default function Auth() {
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <div className="flex justify-center mb-4">
-            <div className="bg-primary p-3 rounded-full">
+            <div
+              className="bg-primary p-3 rounded-full cursor-pointer"
+              onDoubleClick={() => navigate('/firmas')}
+            >
               <Eye className="h-8 w-8 text-primary-foreground" />
             </div>
           </div>

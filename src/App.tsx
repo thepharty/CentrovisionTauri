@@ -155,14 +155,7 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
-            <Route
-              path="/firmas"
-              element={
-                <ProtectedRoute allowedRoles={['admin', 'recepcion', 'enfermeria']}>
-                  <ConsentSignatures />
-                </ProtectedRoute>
-              }
-            />
+            <Route path="/firmas" element={<ConsentSignatures />} />
               {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
               <Route path="*" element={<NotFound />} />
               </Routes>

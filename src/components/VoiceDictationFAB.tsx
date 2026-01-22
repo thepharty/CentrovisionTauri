@@ -47,7 +47,13 @@ export function VoiceDictationFAB({
       // Filtrar solo campos disponibles
       const validResults = results.filter(r => availableFields.includes(r.field));
       if (validResults.length > 0) {
+        // Aplicar automáticamente cada resultado detectado
+        validResults.forEach(result => {
+          onApplyDictation(result.field, result.content, result.eye);
+        });
+        // También guardar en pendientes para mostrar en la UI
         setPendingResults(prev => [...prev, ...validResults]);
+        toast.success(`Campo "${FIELD_LABELS[validResults[0].field]}" actualizado`);
       }
     },
     onError: (error) => {

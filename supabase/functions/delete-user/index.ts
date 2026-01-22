@@ -73,7 +73,19 @@ Deno.serve(async (req) => {
 
     const userEmail = userData.user.email
 
-    // Delete the user (this will cascade to profiles and user_roles due to foreign keys)
+    // Borrar user_roles manualmente
+    await supabaseAdmin
+      .from('user_roles')
+      .delete()
+      .eq('user_id', userId)
+
+    // Borrar profile manualmente
+    await supabaseAdmin
+      .from('profiles')
+      .delete()
+      .eq('user_id', userId)
+
+    // Borrar el usuario de auth
     const { error: deleteError } = await supabaseAdmin.auth.admin.deleteUser(userId)
 
     if (deleteError) {
