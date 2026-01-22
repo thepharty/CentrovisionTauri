@@ -260,6 +260,9 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
                       : `${appointment.patient?.first_name} ${appointment.patient?.last_name}`
                     }
                   </span>
+                  {appointment.status === 'cancelled' && (
+                    <span className="text-red-600 font-semibold text-xs">CANCELADA</span>
+                  )}
                   {!compact && (appointment as any).external_doctor_name && (
                     <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4 bg-orange-100 text-orange-700 border-orange-300">
                       🏥 {(appointment as any).external_doctor_name}

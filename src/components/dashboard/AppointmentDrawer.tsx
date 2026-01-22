@@ -235,9 +235,10 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
       .eq('id', appointment.id);
 
     if (error) {
+      console.error('Error eliminando cita:', error);
       toast({
         title: 'Error',
-        description: 'No se pudo eliminar la cita',
+        description: `No se pudo eliminar la cita: ${error.message}`,
         variant: 'destructive',
       });
     } else {
