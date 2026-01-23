@@ -12,7 +12,8 @@ import { useAuth } from '@/hooks/useAuth';
 import { useBranch, isValidBranchId } from '@/hooks/useBranch';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
-import { isTauri, saveAppointmentsToSqlite, getAppointmentsFromSqlite, AppointmentCache } from '@/lib/dataSource';
+import { isTauri, saveAppointmentsToSqlite, getAppointmentsFromSqlite, AppointmentCache, getAppointments as getAppointmentsFromPostgres, getRoomsLocal, getDoctorsLocal } from '@/lib/dataSource';
+import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { DndContext, DragEndEvent, DragOverlay, DragStartEvent, useDroppable, PointerSensor, TouchSensor, useSensor, useSensors } from '@dnd-kit/core';
 
 interface TimetableProps {
@@ -64,7 +65,7 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const { role } = useAuth();
   const { currentBranch } = useBranch();
-  const { isOnline } = useNetworkStatus();
+  const { isOnline, connectionMode } = useNetworkStatus();
 
   // @dnd-kit sensors - same as KanbanBoard
   const sensors = useSensors(
@@ -98,10 +99,62 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
   const endDate = view === 'day' ? currentDate : clinicEndOfWeek(currentDate);
   const days = view === 'day' ? [currentDate] : eachDayOfInterval({ start: startDate, end: endDate });
 
-  // Realtime OPTIMIZADO: Actualización quirúrgica del cache con debouncing
+  // Realtime para modo LOCAL (Tauri LISTEN/NOTIFY via PostgreSQL)
   useEffect(() => {
+    if (connectionMode !== 'local' || !isTauri()) return;
+
+    let unlisten: UnlistenFn | null = null;
     let debounceTimer: NodeJS.Timeout;
-    
+
+    const setupListener = async () => {
+      try {
+        unlisten = await listen<{ table: string; operation: string; id?: string }>('db:change', (event) => {
+          const { table, operation } = event.payload;
+          console.log(`[Timetable] Local DB change: ${table} ${operation}`);
+
+          clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(() => {
+            if (table === 'appointments') {
+              const startDateStr = format(startDate, 'yyyy-MM-dd');
+              const endDateStr = format(endDate, 'yyyy-MM-dd');
+              queryClient.invalidateQueries({
+                queryKey: ['appointments', startDateStr, endDateStr],
+                exact: false
+              });
+            } else if (table === 'schedule_blocks') {
+              queryClient.invalidateQueries({
+                queryKey: ['schedule_blocks'],
+                exact: false
+              });
+            } else if (table === 'patients') {
+              queryClient.invalidateQueries({
+                queryKey: ['patients'],
+                exact: false
+              });
+            }
+          }, 300);
+        });
+        console.log('[Timetable] Listening for local DB changes via Tauri');
+      } catch (err) {
+        console.error('[Timetable] Failed to setup Tauri listener:', err);
+      }
+    };
+
+    setupListener();
+
+    return () => {
+      clearTimeout(debounceTimer);
+      if (unlisten) unlisten();
+    };
+  }, [connectionMode, queryClient, startDate, endDate]);
+
+  // Realtime para modo SUPABASE (cloud)
+  useEffect(() => {
+    // Solo usar Supabase realtime cuando estamos en modo supabase
+    if (connectionMode !== 'supabase') return;
+
+    let debounceTimer: NodeJS.Timeout;
+
     const channel = supabase
       .channel('appointments-changes')
       .on(
@@ -112,19 +165,19 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
           table: 'appointments'
         },
         (payload: RealtimePostgresChangesPayload<any>) => {
-          console.log('[Timetable] Realtime update:', payload.eventType);
-          
+          console.log('[Timetable] Supabase realtime update:', payload.eventType);
+
           // Debouncing: esperar 300ms antes de actualizar
           clearTimeout(debounceTimer);
           debounceTimer = setTimeout(() => {
             // Solo invalidar si el cambio afecta el rango visible
             const startDateStr = format(startDate, 'yyyy-MM-dd');
             const endDateStr = format(endDate, 'yyyy-MM-dd');
-            
+
             // Invalidar solo las queries específicas del rango actual
-            queryClient.invalidateQueries({ 
+            queryClient.invalidateQueries({
               queryKey: ['appointments', startDateStr, endDateStr],
-              exact: false 
+              exact: false
             });
           }, 300);
         }
@@ -135,12 +188,15 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
       clearTimeout(debounceTimer);
       supabase.removeChannel(channel);
     };
-  }, [queryClient, startDate, endDate]);
+  }, [connectionMode, queryClient, startDate, endDate]);
 
-  // Realtime para schedule_blocks
+  // Realtime para schedule_blocks (modo SUPABASE)
   useEffect(() => {
+    // Solo usar Supabase realtime cuando estamos en modo supabase
+    if (connectionMode !== 'supabase') return;
+
     let debounceTimer: NodeJS.Timeout;
-    
+
     const channel = supabase
       .channel('schedule-blocks-changes')
       .on(
@@ -152,12 +208,12 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
         },
         (payload: RealtimePostgresChangesPayload<any>) => {
           console.log('[Timetable] Schedule block update:', payload.eventType);
-          
+
           clearTimeout(debounceTimer);
           debounceTimer = setTimeout(() => {
-            queryClient.invalidateQueries({ 
+            queryClient.invalidateQueries({
               queryKey: ['schedule_blocks'],
-              exact: false 
+              exact: false
             });
           }, 300);
         }
@@ -168,7 +224,7 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
       clearTimeout(debounceTimer);
       supabase.removeChannel(channel);
     };
-  }, [queryClient, startDate, endDate]);
+  }, [connectionMode, queryClient, startDate, endDate]);
 
   // Calcular la posición de la línea de tiempo actual
   const getCurrentTimePosition = () => {
@@ -191,17 +247,38 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
   const currentTimePosition = getCurrentTimePosition();
   
   const { data: rooms = [] } = useQuery({
-    queryKey: ['rooms', role, showDiagnosticoRoom, showQuirofanoRoom, currentBranch?.id],
+    queryKey: ['rooms', role, showDiagnosticoRoom, showQuirofanoRoom, currentBranch?.id, connectionMode],
     staleTime: 5 * 60 * 1000, // Las salas no cambian frecuentemente - 5 minutos
     enabled: isValidBranchId(currentBranch?.id),
     queryFn: async () => {
+      // En modo local (PostgreSQL), usar Tauri commands
+      if ((connectionMode === 'local' || connectionMode === 'offline') && isTauri() && currentBranch?.id) {
+        console.log('[Timetable] Loading rooms from PostgreSQL local');
+        const allRooms = await getRoomsLocal(currentBranch.id);
+
+        // Filtrar por tipo de sala según los flags activos
+        let filtered = allRooms.filter(r => r.active);
+        if (showDiagnosticoRoom && showQuirofanoRoom) {
+          filtered = filtered.filter(r => r.kind === 'diagnostico' || r.kind === 'quirofano');
+        } else if (showDiagnosticoRoom) {
+          filtered = filtered.filter(r => r.kind === 'diagnostico');
+        } else if (showQuirofanoRoom) {
+          filtered = filtered.filter(r => r.kind === 'quirofano');
+        } else if (role === 'diagnostico') {
+          filtered = filtered.filter(r => r.kind === 'diagnostico');
+        }
+
+        return filtered;
+      }
+
+      // En modo supabase (cloud)
       let query = supabase
         .from('rooms')
         .select('*')
         .eq('active', true)
         .eq('branch_id', currentBranch!.id)
         .order('name');
-      
+
       // Filtrar por tipo de sala según los flags activos
       if (showDiagnosticoRoom && showQuirofanoRoom) {
         query = query.in('kind', ['diagnostico', 'quirofano']);
@@ -213,7 +290,7 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
         // Si es rol diagnostico y no está el flag, mostrar sala de diagnóstico
         query = query.eq('kind', 'diagnostico');
       }
-      
+
       const { data, error } = await query;
       if (error) throw error;
       return data || [];
@@ -221,10 +298,19 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
   });
 
   const { data: doctors = [] } = useQuery({
-    queryKey: ['selected-doctors', selectedDoctorIds],
+    queryKey: ['selected-doctors', selectedDoctorIds, connectionMode],
     enabled: doctorMode,
     staleTime: 2 * 60 * 1000, // Perfiles de médicos estables - 2 minutos
     queryFn: async () => {
+      // En modo local (PostgreSQL), usar Tauri commands
+      if ((connectionMode === 'local' || connectionMode === 'offline') && isTauri()) {
+        console.log('[Timetable] Loading doctors from PostgreSQL local');
+        const allDoctors = await getDoctorsLocal();
+        // Filtrar por los IDs seleccionados
+        return allDoctors.filter(d => selectedDoctorIds.includes(d.user_id));
+      }
+
+      // En modo supabase (cloud)
       const { data } = await supabase
         .from('profiles')
         .select('*')
@@ -235,9 +321,9 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
 
   // Query optimizada con queryKey estable y específico
   // Incluye write-through cache a SQLite y fallback offline
-  // NOTA: isOnline NO va en queryKey para preservar cache de React Query al cambiar estado de red
+  // connectionMode en queryKey para refetch cuando cambie de supabase a local o viceversa
   const { data: appointments = [] } = useQuery({
-    queryKey: ['appointments', format(startDate, 'yyyy-MM-dd'), format(endDate, 'yyyy-MM-dd'), doctorMode, selectedDoctorIds, showDiagnosticoRoom, showQuirofanoRoom, currentBranch?.id],
+    queryKey: ['appointments', format(startDate, 'yyyy-MM-dd'), format(endDate, 'yyyy-MM-dd'), doctorMode, selectedDoctorIds, showDiagnosticoRoom, showQuirofanoRoom, currentBranch?.id, connectionMode],
     staleTime: 15000, // Override: 15 segundos para appointments (datos críticos)
     enabled: isValidBranchId(currentBranch?.id), // Don't run query without a valid branch
     queryFn: async () => {
@@ -285,7 +371,45 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
         }
       }
 
-      // ===== ONLINE MODE =====
+      // ===== LOCAL SERVER MODE (PostgreSQL) =====
+      // Cuando connectionMode es 'local', usar el servidor PostgreSQL local
+      if (connectionMode === 'local' && isTauri() && currentBranch?.id) {
+        console.log('[Timetable] Local mode - loading from PostgreSQL');
+        try {
+          // Cargar citas de cada día del rango
+          const allAppointments: Appointment[] = [];
+          for (const day of days) {
+            const dateStr = format(day, 'yyyy-MM-dd');
+            const dayAppts = await getAppointmentsFromPostgres(currentBranch.id, dateStr);
+            allAppointments.push(...(dayAppts as unknown as Appointment[]));
+          }
+
+          // Aplicar filtros de doctor/sala
+          const filtered = allAppointments.filter(apt => {
+            if (doctorMode && selectedDoctorIds.length > 0) {
+              if (!apt.doctor_id || !selectedDoctorIds.includes(apt.doctor_id)) return false;
+            }
+            if (showDiagnosticoRoom && apt.type === 'estudio') return true;
+            if (showQuirofanoRoom && apt.type === 'cirugia') return true;
+            if (doctorMode && apt.doctor_id && selectedDoctorIds.includes(apt.doctor_id)) return true;
+            return !doctorMode && !showDiagnosticoRoom && !showQuirofanoRoom;
+          });
+
+          console.log(`[Timetable] Loaded ${filtered.length} appointments from PostgreSQL`);
+          return filtered;
+        } catch (err) {
+          console.error('[Timetable] Failed to load from PostgreSQL:', err);
+          // Fallback a SQLite si PostgreSQL falla
+          try {
+            return await loadFromSqlite();
+          } catch (sqliteErr) {
+            console.error('[Timetable] SQLite fallback also failed:', sqliteErr);
+            return [];
+          }
+        }
+      }
+
+      // ===== SUPABASE MODE =====
       // Intentar cargar desde Supabase, con fallback a SQLite si falla
       try {
         // Si necesitamos incluir la sala de diagnóstico, primero obtenemos su ID

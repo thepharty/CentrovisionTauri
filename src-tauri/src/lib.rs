@@ -8,18 +8,22 @@ pub mod auth;
 pub mod config;
 pub mod postgres;
 pub mod connection_manager;
+pub mod realtime;
 
 use db::Database;
 use config::AppConfig;
 use connection_manager::ConnectionManager;
+use realtime::RealtimeManager;
 use tauri::Manager;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// Application state shared across all commands
 pub struct AppState {
     pub db: Arc<Database>,
     pub connection_manager: Arc<ConnectionManager>,
     pub config: AppConfig,
+    pub realtime_manager: RwLock<RealtimeManager>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -96,6 +100,17 @@ pub fn run() {
                 }
             });
 
+            // Initialize realtime manager
+            let mut realtime_manager = RealtimeManager::new();
+
+            // Start realtime listener if local server is configured and enabled
+            if let Some(ref local_config) = config.local_server {
+                if local_config.enabled {
+                    log::info!("Starting realtime listener for local PostgreSQL");
+                    realtime_manager.start(local_config.clone(), app.handle().clone());
+                }
+            }
+
             // Wrap database in Arc for sharing
             let db = Arc::new(db);
 
@@ -104,6 +119,7 @@ pub fn run() {
                 db: db.clone(),
                 connection_manager,
                 config,
+                realtime_manager: RwLock::new(realtime_manager),
             };
             let app_state = Arc::new(app_state);
 
@@ -147,6 +163,86 @@ pub fn run() {
             commands::remove_appointment_from_sqlite,
             // Print command
             commands::print_webview,
+            // Encounters (expedientes médicos)
+            commands::get_encounter_by_id,
+            commands::get_encounters_by_patient,
+            commands::get_encounter_by_appointment,
+            commands::create_encounter,
+            commands::update_encounter,
+            // Exam Eye (exámenes oculares)
+            commands::get_exam_eye,
+            commands::get_exam_eyes_by_encounter,
+            commands::upsert_exam_eye,
+            // Studies (estudios)
+            commands::get_studies_by_appointment,
+            commands::get_studies_by_patient,
+            commands::create_study,
+            commands::update_study_status,
+            // Surgeries (cirugías)
+            commands::get_surgeries_by_appointment,
+            commands::get_surgeries_by_patient,
+            commands::create_surgery,
+            commands::update_surgery,
+            commands::delete_surgery,
+            // Procedures (procedimientos)
+            commands::get_procedures_by_appointment,
+            commands::get_procedures_by_patient,
+            commands::create_procedure,
+            commands::update_procedure,
+            // Diagnoses (diagnósticos)
+            commands::get_diagnoses_by_encounter,
+            commands::create_diagnosis,
+            commands::update_diagnosis,
+            commands::delete_diagnosis,
+            // Invoices (facturas)
+            commands::get_invoices_by_patient,
+            commands::get_invoices_by_branch_and_date,
+            commands::get_invoice_by_id,
+            commands::create_invoice,
+            commands::update_invoice_status,
+            commands::get_invoice_items,
+            // Payments (pagos)
+            commands::get_payments_by_invoice,
+            commands::get_payments_by_date_range,
+            commands::create_payment,
+            commands::delete_payment,
+            // Service prices (precios de servicios)
+            commands::get_service_prices,
+            commands::create_service_price,
+            commands::update_service_price,
+            // Inventory (inventario)
+            commands::get_inventory_items,
+            commands::create_inventory_item,
+            commands::update_inventory_item,
+            commands::get_suppliers,
+            // CRM pipelines
+            commands::get_crm_pipelines,
+            commands::get_crm_pipeline_by_id,
+            commands::create_crm_pipeline,
+            commands::update_crm_pipeline_stage,
+            commands::get_crm_pipeline_stages,
+            commands::get_crm_pipeline_notes,
+            commands::create_crm_pipeline_note,
+            commands::get_crm_procedure_types,
+            // Schedule blocks (bloques de horario)
+            commands::get_schedule_blocks,
+            commands::create_schedule_block,
+            commands::delete_schedule_block,
+            // Clinical types (tipos clínicos)
+            commands::get_surgery_types,
+            commands::get_study_types,
+            commands::get_procedure_types,
+            // Referring doctors (médicos referidores)
+            commands::get_referring_doctors,
+            commands::create_referring_doctor,
+            // Sync pending count (Phase 21)
+            commands::get_sync_pending_count,
+            commands::get_sync_pending_details,
+            // Local storage commands (Phase 22)
+            commands::upload_file_to_local_storage,
+            commands::read_file_from_local_storage,
+            commands::get_local_storage_status,
+            commands::list_local_storage_files,
             // Auth commands
             auth::cache_auth_session,
             auth::get_cached_session,

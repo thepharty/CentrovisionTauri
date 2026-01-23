@@ -18,6 +18,7 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover';
 import { isTauri, getPatients as getPatientsTauri } from '@/lib/dataSource';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 
 interface Patient {
   id: string;
@@ -40,34 +41,39 @@ interface PatientSearchProps {
 export function PatientSearch({ selectedPatientId, onSelectPatient, onClearSelection }: PatientSearchProps) {
   const [open, setOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const { connectionMode } = useNetworkStatus();
 
   const { data: patients = [], isLoading } = useQuery({
-    queryKey: ['patients-search', searchTerm],
+    queryKey: ['patients-search', searchTerm, connectionMode],
     queryFn: async () => {
-      // Try Supabase first (works when online), fallback to local SQLite
-      if (navigator.onLine || !isTauri()) {
-        let query = supabase
-          .from('patients')
-          .select('*');
-
-        if (searchTerm) {
-          query = query.or(`first_name.ilike.%${searchTerm}%,last_name.ilike.%${searchTerm}%,code.ilike.%${searchTerm}%`);
-        }
-
-        query = query.order('last_name', { ascending: true });
-
-        const { data, error } = await query.limit(50);
-        if (error) throw error;
-        return data as Patient[];
-      }
-
-      // Offline mode: use local SQLite
-      if (isTauri()) {
+      // En modo local (PostgreSQL), usar Tauri commands
+      if (connectionMode === 'local' && isTauri()) {
+        console.log('[PatientSearch] Loading from PostgreSQL local');
         const results = await getPatientsTauri(searchTerm || undefined, 50);
         return results as Patient[];
       }
 
-      return [];
+      // En modo offline (sin conexión), usar SQLite cache
+      if (connectionMode === 'offline' && isTauri()) {
+        console.log('[PatientSearch] Offline - loading from SQLite');
+        const results = await getPatientsTauri(searchTerm || undefined, 50);
+        return results as Patient[];
+      }
+
+      // En modo supabase (cloud), usar Supabase
+      let query = supabase
+        .from('patients')
+        .select('*');
+
+      if (searchTerm) {
+        query = query.or(`first_name.ilike.%${searchTerm}%,last_name.ilike.%${searchTerm}%,code.ilike.%${searchTerm}%`);
+      }
+
+      query = query.order('last_name', { ascending: true });
+
+      const { data, error } = await query.limit(50);
+      if (error) throw error;
+      return data as Patient[];
     },
     enabled: open || !!searchTerm,
   });

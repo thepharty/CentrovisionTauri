@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, createContext, useContext, ReactNode, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { isTauri, checkNetworkStatus, getSyncStatus, processSyncQueue, getConnectionStatus, SyncStatus, ConnectionStatus } from '@/lib/dataSource';
+import { isTauri, checkNetworkStatus, getSyncStatus, processSyncQueue, getConnectionStatus, getSyncPendingStatus, SyncStatus, ConnectionStatus, SyncPendingStatus } from '@/lib/dataSource';
 
 // Supabase API key for sync (from env)
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || '';
@@ -16,6 +16,8 @@ interface NetworkStatusContextType {
   triggerSync: () => Promise<void>;
   connectionMode: ConnectionMode;
   connectionStatus: ConnectionStatus | null;
+  syncPendingStatus: SyncPendingStatus | null;
+  lastChecked: Date | null;
 }
 
 const NetworkStatusContext = createContext<NetworkStatusContextType>({
@@ -26,6 +28,8 @@ const NetworkStatusContext = createContext<NetworkStatusContextType>({
   triggerSync: async () => {},
   connectionMode: 'supabase',
   connectionStatus: null,
+  syncPendingStatus: null,
+  lastChecked: null,
 });
 
 export const useNetworkStatus = () => useContext(NetworkStatusContext);
@@ -36,6 +40,8 @@ export const NetworkStatusProvider = ({ children }: { children: ReactNode }) => 
   const [isSyncing, setIsSyncing] = useState(false);
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>('supabase');
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus | null>(null);
+  const [syncPendingStatus, setSyncPendingStatus] = useState<SyncPendingStatus | null>(null);
+  const [lastChecked, setLastChecked] = useState<Date | null>(null);
   const syncInProgress = useRef(false);
   const queryClient = useQueryClient();
 
@@ -59,6 +65,18 @@ export const NetworkStatusProvider = ({ children }: { children: ReactNode }) => 
           // Fallback based on online status
           setConnectionMode(online ? 'supabase' : 'offline');
         }
+
+        // Get sync pending status from PostgreSQL _sync_pending table
+        try {
+          const pendingStatus = await getSyncPendingStatus();
+          setSyncPendingStatus(pendingStatus);
+        } catch (e) {
+          console.warn('Failed to get sync pending status:', e);
+          setSyncPendingStatus({ total_pending: 0, by_table: [] });
+        }
+
+        // Update last checked timestamp
+        setLastChecked(new Date());
       } else {
         // In web mode, use browser's online status
         setIsOnline(navigator.onLine);
@@ -176,6 +194,8 @@ export const NetworkStatusProvider = ({ children }: { children: ReactNode }) => 
         triggerSync,
         connectionMode,
         connectionStatus,
+        syncPendingStatus,
+        lastChecked,
       }}
     >
       {children}

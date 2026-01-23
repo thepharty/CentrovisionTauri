@@ -611,6 +611,7 @@ dependencies = [
  "chrono",
  "deadpool-postgres",
  "dirs 5.0.1",
+ "futures-util",
  "log",
  "postgres-types",
  "reqwest",

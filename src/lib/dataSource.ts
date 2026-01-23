@@ -101,6 +101,26 @@ export interface ConnectionStatus {
   description: string;
 }
 
+// Sync pending status from PostgreSQL _sync_pending table (Phase 21)
+export interface SyncPendingByTable {
+  table_name: string;
+  count: number;
+}
+
+export interface SyncPendingStatus {
+  total_pending: number;
+  by_table: SyncPendingByTable[];
+}
+
+// Detailed sync pending info for admin debugging
+export interface SyncPendingDetail {
+  id: string;
+  table_name: string;
+  record_id: string;
+  operation: string;
+  created_at: string;
+}
+
 // Lazy import for Tauri invoke
 let tauriInvoke: typeof import('@tauri-apps/api/core').invoke | null = null;
 
@@ -161,6 +181,28 @@ export async function getConnectionStatus(): Promise<ConnectionStatus> {
     };
   }
   return invokeCommand<ConnectionStatus>('get_connection_status');
+}
+
+/**
+ * Get sync pending status from PostgreSQL _sync_pending table
+ * This shows how many changes are waiting to be synced to Supabase
+ */
+export async function getSyncPendingStatus(): Promise<SyncPendingStatus> {
+  if (!isTauri()) {
+    return { total_pending: 0, by_table: [] };
+  }
+  return invokeCommand<SyncPendingStatus>('get_sync_pending_count');
+}
+
+/**
+ * Get detailed sync pending items for admin debugging
+ * Shows record IDs and operations to help diagnose sync issues
+ */
+export async function getSyncPendingDetails(limit?: number): Promise<SyncPendingDetail[]> {
+  if (!isTauri()) {
+    return [];
+  }
+  return invokeCommand<SyncPendingDetail[]>('get_sync_pending_details', { limit: limit ?? 50 });
 }
 
 /**
@@ -512,4 +554,146 @@ export async function getAppointmentsFromSqlite(branchId: string, date: string):
     console.warn('Failed to get appointments from SQLite:', error);
     return [];
   }
+}
+
+// ============================================================
+// LOCAL STORAGE (Phase 22) - For offline file storage
+// ============================================================
+
+export interface LocalStorageResult {
+  success: boolean;
+  local_path: string;
+  bucket: string;
+  file_path: string;
+}
+
+export interface LocalStorageStatus {
+  enabled: boolean;
+  smb_path: string | null;
+  is_accessible: boolean;
+}
+
+/**
+ * Upload a file to local SMB storage (for offline use)
+ * The sync service will later upload this to Supabase Storage
+ */
+export async function uploadFileToLocalStorage(
+  bucket: string,
+  filePath: string,
+  fileData: Uint8Array
+): Promise<LocalStorageResult> {
+  if (!isTauri()) {
+    throw new Error('Local storage only available in Tauri mode');
+  }
+  return invokeCommand<LocalStorageResult>('upload_file_to_local_storage', {
+    bucket,
+    filePath,
+    fileData: Array.from(fileData), // Convert Uint8Array to array for serialization
+  });
+}
+
+/**
+ * Read a file from local SMB storage
+ */
+export async function readFileFromLocalStorage(
+  bucket: string,
+  filePath: string
+): Promise<Uint8Array> {
+  if (!isTauri()) {
+    throw new Error('Local storage only available in Tauri mode');
+  }
+  const data = await invokeCommand<number[]>('read_file_from_local_storage', {
+    bucket,
+    filePath,
+  });
+  return new Uint8Array(data);
+}
+
+/**
+ * Check if local storage is available and accessible
+ */
+export async function getLocalStorageStatus(): Promise<LocalStorageStatus> {
+  if (!isTauri()) {
+    return { enabled: false, smb_path: null, is_accessible: false };
+  }
+  return invokeCommand<LocalStorageStatus>('get_local_storage_status');
+}
+
+/**
+ * List files in a bucket from local storage
+ */
+export async function listLocalStorageFiles(
+  bucket: string,
+  prefix?: string
+): Promise<string[]> {
+  if (!isTauri()) {
+    return [];
+  }
+  return invokeCommand<string[]>('list_local_storage_files', {
+    bucket,
+    prefix,
+  });
+}
+
+// ============================================================
+// CRM FUNCTIONS (PostgreSQL Local)
+// ============================================================
+
+export interface CRMPipelineLocal {
+  id: string;
+  patient_id: string;
+  procedure_type_id: string;
+  doctor_id: string | null;
+  branch_id: string;
+  current_stage: string;
+  eye_side: string;
+  status: string;
+  priority: string;
+  notes: string | null;
+  cancellation_reason: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  patient_first_name: string | null;
+  patient_last_name: string | null;
+  patient_code: string | null;
+  patient_phone: string | null;
+  procedure_type_name: string | null;
+  procedure_type_color: string | null;
+  doctor_full_name: string | null;
+  branch_name: string | null;
+}
+
+/**
+ * Get CRM pipelines from PostgreSQL local
+ */
+export async function getCRMPipelines(branchId: string, status?: string): Promise<CRMPipelineLocal[]> {
+  if (!isTauri()) {
+    throw new Error('Use Supabase query in web mode');
+  }
+  return invokeCommand<CRMPipelineLocal[]>('get_crm_pipelines', { branchId, status });
+}
+
+// ============================================================
+// ROOMS FUNCTION (PostgreSQL Local)
+// ============================================================
+
+/**
+ * Get rooms from PostgreSQL local
+ */
+export async function getRoomsLocal(branchId: string): Promise<Room[]> {
+  if (!isTauri()) {
+    throw new Error('Use Supabase query in web mode');
+  }
+  return invokeCommand<Room[]>('get_rooms', { branchId });
+}
+
+/**
+ * Get doctors/profiles from PostgreSQL local
+ */
+export async function getDoctorsLocal(): Promise<Profile[]> {
+  if (!isTauri()) {
+    throw new Error('Use Supabase query in web mode');
+  }
+  return invokeCommand<Profile[]>('get_doctors');
 }

@@ -24,6 +24,8 @@ import {
 import { toast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/useAuth';
 import { ConsultationViewDialog } from './ConsultationViewDialog';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { isTauri, getPatients as getPatientsTauri } from '@/lib/dataSource';
 
 interface Patient {
   id: string;
@@ -74,10 +76,19 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
   const [editedPatient, setEditedPatient] = useState<Patient | null>(null);
   const queryClient = useQueryClient();
   const { hasRole } = useAuth();
+  const { connectionMode } = useNetworkStatus();
 
   const { data: patients = [], isLoading: loadingPatients } = useQuery({
-    queryKey: ['patients-list', searchTerm],
+    queryKey: ['patients-list', searchTerm, connectionMode],
     queryFn: async () => {
+      // En modo local (PostgreSQL) o offline, usar Tauri commands
+      if ((connectionMode === 'local' || connectionMode === 'offline') && isTauri()) {
+        console.log('[PatientsListDialog] Loading from PostgreSQL/SQLite');
+        const results = await getPatientsTauri(searchTerm || undefined, 100);
+        return results as Patient[];
+      }
+
+      // En modo supabase (cloud)
       let query = supabase
         .from('patients')
         .select('*');
@@ -90,7 +101,7 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
 
       const { data, error } = await query;
       if (error) throw error;
-      
+
       return data as Patient[];
     },
     enabled: open,

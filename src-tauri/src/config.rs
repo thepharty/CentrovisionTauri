@@ -9,6 +9,21 @@ use std::path::PathBuf;
 pub struct AppConfig {
     pub supabase: SupabaseConfig,
     pub local_server: Option<LocalServerConfig>,
+    pub local_storage: Option<LocalStorageConfig>,
+}
+
+/// Local file storage configuration (SMB share on clinic server)
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LocalStorageConfig {
+    /// SMB path to the shared folder (e.g., \\\\192.168.0.9\\CentroVisionStorage)
+    pub smb_path: String,
+    /// Optional username for SMB authentication
+    pub username: Option<String>,
+    /// Optional password for SMB authentication
+    pub password: Option<String>,
+    /// Whether local storage is enabled
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
 }
 
 /// Supabase cloud configuration
@@ -43,6 +58,7 @@ impl Default for AppConfig {
                 anon_key: String::new(),
             },
             local_server: None,
+            local_storage: None,
         }
     }
 }
@@ -69,6 +85,11 @@ impl AppConfig {
             log::info!("Local server configured: {}:{}",
                 config.local_server.as_ref().unwrap().host,
                 config.local_server.as_ref().unwrap().port
+            );
+        }
+        if config.local_storage.is_some() {
+            log::info!("Local storage configured: {}",
+                config.local_storage.as_ref().unwrap().smb_path
             );
         }
 
@@ -115,6 +136,14 @@ anon_key = "your-anon-key"
 # user = "centrovision_app"
 # password = "your-secure-password"
 # enabled = true
+
+# Optional: Local file storage (SMB share) for offline file access
+# Files are stored here when offline, then synced to Supabase Storage
+# [local_storage]
+# smb_path = "\\\\192.168.0.9\\CentroVisionStorage"
+# username = "centrovision_service"  # Optional if using Everyone access
+# password = "your-password"
+# enabled = true
 "#;
 
         std::fs::write(&config_path, default_config)
@@ -130,6 +159,22 @@ anon_key = "your-anon-key"
             .as_ref()
             .map(|s| s.enabled)
             .unwrap_or(false)
+    }
+
+    /// Check if local storage is configured and enabled
+    pub fn has_local_storage(&self) -> bool {
+        self.local_storage
+            .as_ref()
+            .map(|s| s.enabled)
+            .unwrap_or(false)
+    }
+
+    /// Get the local storage SMB path if configured
+    pub fn get_storage_path(&self) -> Option<&str> {
+        self.local_storage
+            .as_ref()
+            .filter(|s| s.enabled)
+            .map(|s| s.smb_path.as_str())
     }
 }
 

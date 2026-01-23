@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { isTauri, getCRMPipelines as getCRMPipelinesLocal } from '@/lib/dataSource';
 
 export interface CRMPipeline {
   id: string;
@@ -76,9 +78,56 @@ export interface CreatePipelineData {
 }
 
 export const useCRMPipelines = (branchId?: string, status?: string) => {
+  const { connectionMode } = useNetworkStatus();
+
   return useQuery({
-    queryKey: ['crm-pipelines', branchId, status],
+    queryKey: ['crm-pipelines', branchId, status, connectionMode],
     queryFn: async () => {
+      // En modo local (PostgreSQL), usar Tauri commands
+      if ((connectionMode === 'local' || connectionMode === 'offline') && isTauri() && branchId) {
+        console.log('[useCRMPipelines] Loading from PostgreSQL local');
+        const localData = await getCRMPipelinesLocal(branchId, status);
+
+        // Transformar la estructura plana a la estructura con objetos anidados
+        return localData.map(p => ({
+          id: p.id,
+          patient_id: p.patient_id,
+          procedure_type_id: p.procedure_type_id,
+          doctor_id: p.doctor_id,
+          branch_id: p.branch_id,
+          current_stage: p.current_stage,
+          eye_side: p.eye_side as 'OD' | 'OI' | 'OU',
+          status: p.status,
+          priority: p.priority,
+          notes: p.notes,
+          cancellation_reason: p.cancellation_reason,
+          created_by: p.created_by,
+          created_at: p.created_at,
+          updated_at: p.updated_at,
+          patient: p.patient_first_name ? {
+            id: p.patient_id,
+            first_name: p.patient_first_name,
+            last_name: p.patient_last_name || '',
+            code: p.patient_code,
+            phone: p.patient_phone,
+          } : undefined,
+          procedure_type: p.procedure_type_name ? {
+            id: p.procedure_type_id,
+            name: p.procedure_type_name,
+            color: p.procedure_type_color || '#6366f1',
+          } : undefined,
+          doctor: p.doctor_full_name ? {
+            user_id: p.doctor_id!,
+            full_name: p.doctor_full_name,
+          } : undefined,
+          branch: p.branch_name ? {
+            id: p.branch_id,
+            name: p.branch_name,
+          } : undefined,
+        })) as CRMPipeline[];
+      }
+
+      // En modo supabase (cloud)
       let query = supabase
         .from('crm_pipelines')
         .select(`
