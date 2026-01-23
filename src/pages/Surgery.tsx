@@ -343,7 +343,7 @@ export default function Surgery() {
         patient_signature: string;
         witness_signature: string;
         consent_text: string;
-        created_at: string;
+        signed_at: string;
       } | null;
     },
     enabled: !!surgery?.id,
@@ -1441,7 +1441,7 @@ export default function Surgery() {
                 <p>Firmado por: <span className="font-medium text-foreground">{consentSignature.patient_name}</span></p>
                 <p>Testigo: <span className="font-medium text-foreground">{consentSignature.witness_name}</span></p>
                 <p>Fecha: <span className="font-medium text-foreground">
-                  {formatConsentDate(consentSignature.created_at)}
+                  {formatConsentDate(consentSignature.signed_at)}
                 </span></p>
               </div>
             )}
@@ -2366,7 +2366,7 @@ export default function Surgery() {
                     doc.setTextColor(100);
                     doc.text('Fecha de firma:', 20, y);
                     doc.setTextColor(0);
-                    doc.text(formatConsentDate(consentSignature.created_at, {
+                    doc.text(formatConsentDate(consentSignature.signed_at, {
                       day: '2-digit',
                       month: 'long',
                       year: 'numeric',
@@ -2469,7 +2469,7 @@ export default function Surgery() {
                 <div className="col-span-2">
                   <p className="text-sm text-muted-foreground">Fecha de firma</p>
                   <p className="font-medium">
-                    {formatConsentDate(consentSignature.created_at, {
+                    {formatConsentDate(consentSignature.signed_at, {
                       weekday: 'long',
                       day: '2-digit',
                       month: 'long',
