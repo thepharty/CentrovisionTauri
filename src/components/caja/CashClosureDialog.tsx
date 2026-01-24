@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+import { getCachedUser } from '@/lib/dataSource';
 import { clinicStartOfDay, clinicEndOfDay, clinicNow } from "@/lib/timezone";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
@@ -21,6 +24,11 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { generateCashClosureHTML, CashClosureData } from '@/lib/printTemplates';
 import { PrintPreviewDialog } from '@/components/dashboard/PrintPreviewDialog';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 
 interface CashClosureDialogProps {
   open: boolean;
@@ -56,35 +64,62 @@ interface Invoice {
 export function CashClosureDialog({ open, onOpenChange }: CashClosureDialogProps) {
   const queryClient = useQueryClient();
   const { currentBranch } = useBranch();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const [isClosing, setIsClosing] = useState(false);
   const [printHtmlContent, setPrintHtmlContent] = useState<string | null>(null);
   const [showPrintPreview, setShowPrintPreview] = useState(false);
-  
+
   const today = clinicNow();
   const startOfDay = clinicStartOfDay(today);
   const endOfDay = clinicEndOfDay(today);
 
   // Obtener perfil del usuario actual
   const { data: userProfile } = useQuery({
-    queryKey: ["user-profile"],
+    queryKey: ["user-profile", isLocalMode],
     queryFn: async () => {
+      // En modo local, usar sesión cacheada
+      if (isLocalMode) {
+        console.log('[CashClosureDialog] Getting user profile from cached session');
+        const cachedUser = await getCachedUser();
+        if (cachedUser) {
+          return {
+            full_name: cachedUser.full_name || cachedUser.email,
+            email: cachedUser.email,
+          };
+        }
+        return null;
+      }
+
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return null;
-      
+
       const { data } = await supabase
         .from("profiles")
         .select("full_name, email")
         .eq("user_id", user.id)
         .single();
-      
+
       return data;
     },
   });
 
   // Ventas por tipo de servicio
   const { data: serviceSales = [] } = useQuery({
-    queryKey: ["service-sales", startOfDay.toISOString(), currentBranch?.id],
+    queryKey: ["service-sales", startOfDay.toISOString(), currentBranch?.id, isLocalMode],
     queryFn: async () => {
+      if (!currentBranch?.id) return [];
+
+      // Modo local: usar Tauri command
+      if (isLocalMode) {
+        return await invoke<ServiceSales[]>('get_service_sales', {
+          branchId: currentBranch.id,
+          startDate: startOfDay.toISOString(),
+          endDate: endOfDay.toISOString(),
+        });
+      }
+
+      // Modo online: Supabase RPC
       const { data, error } = await supabase.rpc("get_service_sales", {
         start_date: startOfDay.toISOString(),
         end_date: endOfDay.toISOString(),
@@ -98,8 +133,26 @@ export function CashClosureDialog({ open, onOpenChange }: CashClosureDialogProps
 
   // Detalle individual de servicios vendidos
   const { data: serviceDetails = [] } = useQuery({
-    queryKey: ["service-details", startOfDay.toISOString(), currentBranch?.id],
+    queryKey: ["service-details", startOfDay.toISOString(), currentBranch?.id, isLocalMode],
     queryFn: async () => {
+      if (!currentBranch?.id) return [];
+
+      // Modo local: usar Tauri command
+      if (isLocalMode) {
+        const data = await invoke<any[]>('get_service_details', {
+          branchId: currentBranch.id,
+          startDate: startOfDay.toISOString(),
+          endDate: endOfDay.toISOString(),
+        });
+        return (data || []).map((item: any) => ({
+          service_name: item.service_name,
+          service_type: item.service_type,
+          quantity: Number(item.cantidad),
+          subtotal: Number(item.total),
+        }));
+      }
+
+      // Modo online: Supabase RPC
       const { data, error } = await supabase.rpc('get_service_details', {
         start_date: startOfDay.toISOString(),
         end_date: endOfDay.toISOString(),
@@ -118,8 +171,26 @@ export function CashClosureDialog({ open, onOpenChange }: CashClosureDialogProps
 
   // Detalle individual de productos vendidos
   const { data: inventoryDetails = [] } = useQuery({
-    queryKey: ["inventory-details", startOfDay.toISOString(), currentBranch?.id],
+    queryKey: ["inventory-details", startOfDay.toISOString(), currentBranch?.id, isLocalMode],
     queryFn: async () => {
+      if (!currentBranch?.id) return [];
+
+      // Modo local: usar Tauri command
+      if (isLocalMode) {
+        const data = await invoke<any[]>('get_inventory_details', {
+          branchId: currentBranch.id,
+          startDate: startOfDay.toISOString(),
+          endDate: endOfDay.toISOString(),
+        });
+        return (data || []).map((item: any) => ({
+          category: item.category,
+          product_name: item.product_name,
+          quantity: Number(item.cantidad),
+          total: Number(item.total),
+        }));
+      }
+
+      // Modo online: Supabase RPC
       const { data, error } = await supabase.rpc('get_inventory_details_v3' as any, {
         start_date: startOfDay.toISOString(),
         end_date: endOfDay.toISOString(),
@@ -138,8 +209,20 @@ export function CashClosureDialog({ open, onOpenChange }: CashClosureDialogProps
 
   // Ventas de inventario
   const { data: inventorySales = [] } = useQuery({
-    queryKey: ["inventory-sales", startOfDay.toISOString(), currentBranch?.id],
+    queryKey: ["inventory-sales", startOfDay.toISOString(), currentBranch?.id, isLocalMode],
     queryFn: async () => {
+      if (!currentBranch?.id) return [];
+
+      // Modo local: usar Tauri command
+      if (isLocalMode) {
+        return await invoke<InventorySales[]>('get_inventory_sales', {
+          branchId: currentBranch.id,
+          startDate: startOfDay.toISOString(),
+          endDate: endOfDay.toISOString(),
+        });
+      }
+
+      // Modo online: Supabase RPC
       const { data, error } = await supabase.rpc("get_inventory_sales_v3" as any, {
         start_date: startOfDay.toISOString(),
         end_date: endOfDay.toISOString(),
@@ -153,8 +236,20 @@ export function CashClosureDialog({ open, onOpenChange }: CashClosureDialogProps
 
   // Métodos de pago
   const { data: paymentMethods = [] } = useQuery({
-    queryKey: ["payment-methods", startOfDay.toISOString(), currentBranch?.id],
+    queryKey: ["payment-methods", startOfDay.toISOString(), currentBranch?.id, isLocalMode],
     queryFn: async () => {
+      if (!currentBranch?.id) return [];
+
+      // Modo local: usar Tauri command
+      if (isLocalMode) {
+        return await invoke<PaymentMethod[]>('get_payment_method_summary', {
+          branchId: currentBranch.id,
+          startDate: startOfDay.toISOString(),
+          endDate: endOfDay.toISOString(),
+        });
+      }
+
+      // Modo online: Supabase RPC
       const { data, error } = await supabase.rpc("get_payment_methods", {
         start_date: startOfDay.toISOString(),
         end_date: endOfDay.toISOString(),
@@ -168,10 +263,31 @@ export function CashClosureDialog({ open, onOpenChange }: CashClosureDialogProps
 
   // Resumen diario
   const { data: dailySummary } = useQuery({
-    queryKey: ["daily-summary", startOfDay.toISOString(), currentBranch?.id],
+    queryKey: ["daily-summary", startOfDay.toISOString(), currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!currentBranch?.id) return null;
-      
+
+      // Modo local: usar Tauri command
+      if (isLocalMode) {
+        const summary = await invoke<{
+          total_invoiced: number;
+          total_collected: number;
+          total_pending: number;
+          total_discounts: number;
+        }>('get_daily_summary', {
+          branchId: currentBranch.id,
+          startDate: startOfDay.toISOString(),
+          endDate: endOfDay.toISOString(),
+        });
+        return {
+          totalInvoiced: summary.total_invoiced,
+          totalCollected: summary.total_collected,
+          totalPending: summary.total_pending,
+          totalDiscounts: summary.total_discounts,
+        };
+      }
+
+      // Modo online: Supabase queries
       const { data: invoices, error: invoicesError } = await supabase
         .from("invoices")
         .select("total_amount, balance_due, discount_value")
@@ -199,15 +315,25 @@ export function CashClosureDialog({ open, onOpenChange }: CashClosureDialogProps
 
       return { totalInvoiced, totalCollected, totalPending, totalDiscounts };
     },
-    enabled: open,
+    enabled: open && !!currentBranch?.id,
   });
 
   // Facturas del día
   const { data: invoices = [] } = useQuery({
-    queryKey: ["daily-invoices", startOfDay.toISOString(), currentBranch?.id],
+    queryKey: ["daily-invoices", startOfDay.toISOString(), currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!currentBranch?.id) return [];
-      
+
+      // Modo local: usar Tauri command
+      if (isLocalMode) {
+        return await invoke<Invoice[]>('get_daily_invoices', {
+          branchId: currentBranch.id,
+          startDate: startOfDay.toISOString(),
+          endDate: endOfDay.toISOString(),
+        });
+      }
+
+      // Modo online: Supabase query
       const { data, error } = await supabase
         .from("invoices")
         .select(`
@@ -232,7 +358,7 @@ export function CashClosureDialog({ open, onOpenChange }: CashClosureDialogProps
         payment_method: inv.payments?.[0]?.payment_method || null,
       })) as Invoice[];
     },
-    enabled: open,
+    enabled: open && !!currentBranch?.id,
   });
 
   const closeCashMutation = useMutation({
@@ -257,7 +383,7 @@ export function CashClosureDialog({ open, onOpenChange }: CashClosureDialogProps
       const cheque = paymentMethods.find(p => p.payment_method === "cheque") || { total: 0 };
       const otro = paymentMethods.find(p => p.payment_method === "otro") || { total: 0 };
 
-      const { error } = await supabase.from("cash_closures").insert([{
+      const closureData = {
         branch_id: currentBranch?.id || '',
         period_start: startOfDay.toISOString(),
         period_end: clinicNow().toISOString(),
@@ -285,9 +411,18 @@ export function CashClosureDialog({ open, onOpenChange }: CashClosureDialogProps
           service_sales: serviceSales,
           inventory_sales: inventorySales,
           payment_methods: paymentMethods,
-        } as any,
+        },
         closed_by: user.id,
-      }]);
+      };
+
+      // Modo local: usar Tauri command
+      if (isLocalMode) {
+        await invoke('create_cash_closure', { closure: closureData });
+        return;
+      }
+
+      // Modo online: Supabase
+      const { error } = await supabase.from("cash_closures").insert([closureData as any]);
 
       if (error) throw error;
     },

@@ -2,7 +2,14 @@ import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useBranch } from '@/hooks/useBranch';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -18,6 +25,8 @@ import { es } from 'date-fns/locale';
 
 export default function PaymentForm() {
   const { currentBranch } = useBranch();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const queryClient = useQueryClient();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedInvoice, setSelectedInvoice] = useState<any>(null);
@@ -35,10 +44,23 @@ export default function PaymentForm() {
 
   // Obtener todas las facturas pendientes (para la lista) - FILTRADO POR SUCURSAL
   const { data: allPendingInvoices } = useQuery({
-    queryKey: ['all-pending-invoices', dateFilter, currentBranch?.id],
+    queryKey: ['all-pending-invoices', dateFilter, currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!currentBranch?.id) return [];
-      
+
+      if (isLocalMode) {
+        // En modo local, usar el comando Tauri
+        const data = await invoke<any[]>('get_pending_invoices_by_branch', {
+          branchId: currentBranch.id,
+          dateFilter: dateFilter === 'all' ? null : dateFilter,
+        });
+        // Mapear patient a patients para compatibilidad
+        return (data || []).map(inv => ({
+          ...inv,
+          patients: inv.patient
+        }));
+      }
+
       let query = supabase
         .from('invoices')
         .select(`
@@ -63,7 +85,7 @@ export default function PaymentForm() {
       const { data } = await query
         .order('created_at', { ascending: false })
         .limit(50);
-      
+
       return data || [];
     },
     enabled: !!currentBranch?.id,
@@ -82,11 +104,35 @@ export default function PaymentForm() {
 
   // Buscar facturas pendientes (para búsqueda manual) - FILTRADO POR SUCURSAL
   const { data: pendingInvoices, isLoading: isSearching } = useQuery({
-    queryKey: ['pending-invoices', searchTerm.trim(), currentBranch?.id],
+    queryKey: ['pending-invoices', searchTerm.trim(), currentBranch?.id, isLocalMode],
     queryFn: async () => {
       const trimmedSearch = searchTerm.trim();
       if (!trimmedSearch || trimmedSearch.length < 2 || !currentBranch?.id) return [];
-      
+
+      if (isLocalMode) {
+        // En modo local, obtener todas las facturas pendientes y filtrar en cliente
+        const data = await invoke<any[]>('get_pending_invoices_by_branch', {
+          branchId: currentBranch.id,
+          dateFilter: null, // Sin filtro de fecha para búsqueda
+        });
+        const searchLower = trimmedSearch.toLowerCase();
+        const filtered = (data || []).filter(inv => {
+          const invoiceNumber = inv.invoice_number?.toLowerCase() || '';
+          const firstName = inv.patient?.first_name?.toLowerCase() || '';
+          const lastName = inv.patient?.last_name?.toLowerCase() || '';
+          const code = inv.patient?.code?.toLowerCase() || '';
+          return invoiceNumber.includes(searchLower) ||
+                 firstName.includes(searchLower) ||
+                 lastName.includes(searchLower) ||
+                 code.includes(searchLower);
+        });
+        // Mapear patient a patients para compatibilidad
+        return filtered.slice(0, 10).map(inv => ({
+          ...inv,
+          patients: inv.patient
+        }));
+      }
+
       try {
         console.log('🔍 Buscando facturas con término:', trimmedSearch, 'en sucursal:', currentBranch.id);
 
@@ -133,7 +179,7 @@ export default function PaymentForm() {
         if (patients && patients.length > 0) {
           const patientIds = patients.map(p => p.id);
           console.log('🔎 Buscando facturas para pacientes:', patientIds);
-          
+
           const { data: patientInvoices, error: error3 } = await supabase
             .from('invoices')
             .select('*')
@@ -167,7 +213,7 @@ export default function PaymentForm() {
 
         // Combinar y deduplicar resultados
         const allInvoices = [...(invoicesByNumber || []), ...invoicesByPatient];
-        const uniqueInvoices = allInvoices.filter((invoice, index, self) => 
+        const uniqueInvoices = allInvoices.filter((invoice, index, self) =>
           index === self.findIndex(i => i.id === invoice.id)
         );
 
@@ -184,9 +230,21 @@ export default function PaymentForm() {
 
   // Obtener pagos existentes de la factura seleccionada
   const { data: existingPayments } = useQuery({
-    queryKey: ['invoice-payments', selectedInvoice?.id],
+    queryKey: ['invoice-payments', selectedInvoice?.id, isLocalMode],
     queryFn: async () => {
       if (!selectedInvoice) return [];
+
+      if (isLocalMode) {
+        // En modo local, usar el comando Tauri
+        const data = await invoke<any[]>('get_payments_by_invoice', {
+          invoiceId: selectedInvoice.id,
+        });
+        // Filtrar por status y ordenar
+        return (data || [])
+          .filter(p => p.status === 'completado')
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      }
+
       const { data } = await supabase
         .from('payments')
         .select('*')
@@ -228,6 +286,18 @@ export default function PaymentForm() {
         const changeAmount = Number(amountReceived) - paymentAmount;
         const changeInfo = `Recibido: GTQ ${Number(amountReceived).toFixed(2)} | Cambio: GTQ ${changeAmount.toFixed(2)}`;
         finalNotes = finalNotes ? `${changeInfo}\n${finalNotes}` : changeInfo;
+      }
+
+      if (isLocalMode) {
+        // En modo local, usar el comando Tauri
+        const data = await invoke<any>('create_payment', {
+          payment: {
+            invoice_id: selectedInvoice.id,
+            amount: paymentAmount,
+            payment_method: paymentMethod,
+          }
+        });
+        return data;
       }
 
       const { data, error } = await supabase

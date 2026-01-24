@@ -1,7 +1,14 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '@/hooks/useAuth';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 import { Navigate, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -77,6 +84,8 @@ export default function Admin() {
   const { role, roles, signOut } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const [activeSection, setActiveSection] = useState<AdminSection>('crear-usuario');
   const [usuariosOpen, setUsuariosOpen] = useState(true);
   const [email, setEmail] = useState('');
@@ -111,8 +120,12 @@ export default function Admin() {
   }
 
   const { data: users = [], isLoading } = useQuery({
-    queryKey: ['admin-users'],
+    queryKey: ['admin-users', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        return await invoke<UserWithProfile[]>('get_all_users_with_profiles');
+      }
+
       // Get all user roles with profiles including email
       const { data: userRoles, error: rolesError } = await supabase
         .from('user_roles')
@@ -135,11 +148,11 @@ export default function Admin() {
 
       // Group all roles by user_id
       const userMap = new Map<string, UserWithProfile>();
-      
+
       userRoles.forEach(ur => {
         const profile = profiles?.find(p => p.user_id === ur.user_id);
         const existing = userMap.get(ur.user_id);
-        
+
         if (existing) {
           // Agregar rol al array si no existe
           if (!existing.roles.includes(ur.role)) {
@@ -164,8 +177,12 @@ export default function Admin() {
   });
 
   const { data: pendingRegistrations = [], isLoading: isLoadingPending } = useQuery({
-    queryKey: ['pending-registrations'],
+    queryKey: ['pending-registrations', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        return await invoke<PendingRegistration[]>('get_pending_registrations');
+      }
+
       const { data, error } = await supabase
         .from('pending_registrations')
         .select('*')
@@ -180,6 +197,17 @@ export default function Admin() {
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Verificar modo offline
+    if (isLocalMode) {
+      toast({
+        title: 'Requiere conexión',
+        description: 'Crear usuarios requiere conexión a internet.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     setIsCreating(true);
 
     try {
@@ -251,6 +279,18 @@ export default function Admin() {
   const handleFinalDelete = async () => {
     if (!deleteUserId) return;
 
+    // Verificar modo offline
+    if (isLocalMode) {
+      toast({
+        title: 'Requiere conexión',
+        description: 'Eliminar usuarios requiere conexión a internet.',
+        variant: 'destructive',
+      });
+      setShowSecondWarning(false);
+      setDeleteUserId(null);
+      return;
+    }
+
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
@@ -296,8 +336,18 @@ export default function Admin() {
   };
 
   const handleApproveRegistration = async (registrationId: string) => {
+    // Verificar modo offline
+    if (isLocalMode) {
+      toast({
+        title: 'Requiere conexión',
+        description: 'Aprobar registros requiere conexión a internet.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     setProcessingRegistrationId(registrationId);
-    
+
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
@@ -343,8 +393,18 @@ export default function Admin() {
   };
 
   const handleRejectRegistration = async (registrationId: string) => {
+    // Verificar modo offline
+    if (isLocalMode) {
+      toast({
+        title: 'Requiere conexión',
+        description: 'Rechazar registros requiere conexión a internet.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     setProcessingRegistrationId(registrationId);
-    
+
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
@@ -401,15 +461,22 @@ export default function Admin() {
 
     setIsAddingRole(true);
     try {
-      const { error } = await supabase
-        .from('user_roles')
-        .insert({ user_id: addingRoleUserId, role: roleToAdd });
+      if (isLocalMode) {
+        await invoke('add_user_role', {
+          userId: addingRoleUserId,
+          role: roleToAdd
+        });
+      } else {
+        const { error } = await supabase
+          .from('user_roles')
+          .insert({ user_id: addingRoleUserId, role: roleToAdd });
 
-      if (error) {
-        if (error.code === '23505') {
-          throw new Error('El usuario ya tiene este rol');
+        if (error) {
+          if (error.code === '23505') {
+            throw new Error('El usuario ya tiene este rol');
+          }
+          throw error;
         }
-        throw error;
       }
 
       toast({
@@ -422,7 +489,7 @@ export default function Admin() {
       console.error('Error adding role:', error);
       toast({
         title: 'Error',
-        description: error.message || 'No se pudo añadir el rol.',
+        description: error.message || String(error) || 'No se pudo añadir el rol.',
         variant: 'destructive',
       });
     } finally {
@@ -445,6 +512,17 @@ export default function Admin() {
     try {
       // Si hay nueva contraseña, actualizarla via edge function
       if (newPassword.trim()) {
+        // Verificar modo offline para cambio de contraseña
+        if (isLocalMode) {
+          toast({
+            title: 'Requiere conexión',
+            description: 'Cambiar contraseñas requiere conexión a internet.',
+            variant: 'destructive',
+          });
+          setIsSavingEdit(false);
+          return;
+        }
+
         if (newPassword.length < 6) {
           toast({
             title: 'Error',
@@ -481,15 +559,22 @@ export default function Admin() {
 
       // Actualizar specialty/gender en profiles
       const isDoctor = editingUser.roles.includes('doctor');
-      const { error } = await supabase
-        .from('profiles')
-        .update({ 
+      if (isLocalMode) {
+        await invoke('update_profile_doctor_info', {
+          userId: editingUser.user_id,
           specialty: isDoctor ? editSpecialty : null,
           gender: isDoctor ? editGender : null
-        })
-        .eq('user_id', editingUser.user_id);
-
-      if (error) throw error;
+        });
+      } else {
+        const { error } = await supabase
+          .from('profiles')
+          .update({
+            specialty: isDoctor ? editSpecialty : null,
+            gender: isDoctor ? editGender : null
+          })
+          .eq('user_id', editingUser.user_id);
+        if (error) throw error;
+      }
 
       toast({
         title: 'Usuario actualizado',
@@ -832,12 +917,18 @@ export default function Admin() {
                             const handleToggleVisibility = async () => {
                               if (!isDoctor) return;
                               try {
-                                const { error } = await supabase
-                                  .from('profiles')
-                                  .update({ is_visible_in_dashboard: !isVisible })
-                                  .eq('user_id', user.user_id);
-                                
-                                if (error) throw error;
+                                if (isLocalMode) {
+                                  await invoke('update_profile_visibility', {
+                                    userId: user.user_id,
+                                    isVisible: !isVisible
+                                  });
+                                } else {
+                                  const { error } = await supabase
+                                    .from('profiles')
+                                    .update({ is_visible_in_dashboard: !isVisible })
+                                    .eq('user_id', user.user_id);
+                                  if (error) throw error;
+                                }
                                 queryClient.invalidateQueries({ queryKey: ['admin-users'] });
                                 queryClient.invalidateQueries({ queryKey: ['sidebar-doctors'] });
                                 toast({ title: isVisible ? 'Doctor oculto del dashboard' : 'Doctor visible en dashboard' });

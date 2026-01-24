@@ -10,6 +10,13 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { clinicNow, clinicStartOfDay } from '@/lib/timezone';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 import InvoiceForm from '@/components/caja/InvoiceForm';
 import InvoicesList from '@/components/caja/InvoicesList';
 import PaymentForm from '@/components/caja/PaymentForm';
@@ -29,6 +36,10 @@ export default function Caja() {
   const [cashClosureOpen, setCashClosureOpen] = useState(false);
   const [reportsOpen, setReportsOpen] = useState(false);
   const [showSecretButton, setShowSecretButton] = useState(false);
+  const { connectionMode } = useNetworkStatus();
+
+  // Check if we should use local mode
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   // Verificar que el usuario tiene permisos de caja, contabilidad o admin
   const hasAccess = roles.some(r => r === 'admin' || r === 'caja' || r === 'contabilidad');
@@ -38,12 +49,42 @@ export default function Caja() {
 
   // Query para obtener resumen de caja del día
   const { data: summary } = useQuery({
-    queryKey: ['caja-summary', currentBranch?.id],
+    queryKey: ['caja-summary', currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!currentBranch?.id) return null;
-      
+
       const today = clinicNow();
       const startOfDay = clinicStartOfDay(today);
+      const todayStr = today.toISOString().split('T')[0];
+
+      if (isLocalMode) {
+        // En modo local, usar los comandos Tauri existentes
+        // Get invoices for today
+        const invoices = await invoke<any[]>('get_invoices_by_branch_and_date', {
+          branchId: currentBranch.id,
+          date: todayStr,
+        });
+
+        // Get payments for date range (today)
+        const payments = await invoke<any[]>('get_payments_by_date_range', {
+          branchId: currentBranch.id,
+          startDate: startOfDay.toISOString(),
+          endDate: today.toISOString(),
+        });
+
+        const totalInvoiced = invoices?.reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0) || 0;
+        const totalPending = invoices?.reduce((sum, inv) => sum + Number(inv.balance_due || 0), 0) || 0;
+        const totalCollected = payments?.filter(p => p.status === 'completado')
+          .reduce((sum, pay) => sum + Number(pay.amount || 0), 0) || 0;
+        const invoiceCount = invoices?.length || 0;
+
+        return {
+          totalInvoiced,
+          totalPending,
+          totalCollected,
+          invoiceCount,
+        };
+      }
 
       // Buscar el último cierre de caja del día
       const { data: lastClosure } = await supabase
@@ -57,7 +98,7 @@ export default function Caja() {
 
       // Si existe un cierre, usar su period_end como punto de inicio
       // Si no existe, usar el inicio del día
-      const periodStart = lastClosure?.period_end 
+      const periodStart = lastClosure?.period_end
         ? new Date(lastClosure.period_end)
         : startOfDay;
 

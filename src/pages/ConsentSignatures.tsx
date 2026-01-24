@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useBranch } from '@/hooks/useBranch';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -9,30 +10,72 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Loader2, UserRound, Scissors, ArrowLeft, Check, FileText } from 'lucide-react';
+import { Loader2, UserRound, Scissors, ArrowLeft, Check, FileText, WifiOff } from 'lucide-react';
 import { toast } from 'sonner';
 import SignaturePad, { SignaturePadRef } from '@/components/signature/SignaturePad';
 
-// Texto del consentimiento informado genérico
-const CONSENT_TEXT = `CONSENTIMIENTO INFORMADO PARA PROCEDIMIENTO QUIRÚRGICO
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 
-Yo, el/la paciente abajo firmante, declaro que:
+// Función para generar el texto del consentimiento con datos dinámicos
+const generateConsentText = (data: {
+  patientName: string;
+  patientAge: number | string;
+  patientCode: string;
+  responsable: string;
+  doctorName: string;
+  surgeryDescription: string;
+  day: number;
+  month: string;
+  year: number;
+}) => `CONSENTIMIENTO INFORMADO DE OPERACIÓN QUIRÚRGICA
 
-1. He sido informado(a) de manera clara y comprensible sobre el procedimiento quirúrgico que se me va a realizar, incluyendo su naturaleza, propósito y los beneficios esperados.
+Paciente: ${data.patientName}
+Edad: ${data.patientAge} años, Identificación: ${data.patientCode}
+Responsable: ${data.responsable || 'N/A'}
+Cirugía a realizar: ${data.surgeryDescription}
 
-2. Se me han explicado los riesgos y posibles complicaciones asociados con el procedimiento, incluyendo pero no limitado a: infección, sangrado, reacciones adversas a la anestesia, y resultados no satisfactorios.
+1. Yo, ${data.patientName}, de ${data.patientAge} años, solicito y autorizo al Dr. (a): ${data.doctorName} y a otros médicos asociados seleccionados por el (ellas), a realizarme cirugía, sedación local, procedimiento (s) tratamiento (s), el (los) cual (es) me han sido explicado (s) por el Médico en términos totalmente comprensibles por mi persona o responsable.
 
-3. He tenido la oportunidad de hacer preguntas y todas mis dudas han sido resueltas satisfactoriamente.
+2. El Médico me ha informado de todos los tratamientos aceptables alternativos, en términos totalmente comprensibles por mi persona.
 
-4. Entiendo que no se me ha garantizado ningún resultado específico y que los resultados pueden variar de persona a persona.
+3. El Médico me ha informado en términos que comprendí, de los riesgos, beneficios, y expectativas del proceso de recuperación que están asociados con la cirugía, sedación, anestesia general, procedimiento (s) o tratamiento (s) descritos anteriormente.
 
-5. Autorizo al equipo médico de CentroVisión a realizar el procedimiento quirúrgico indicado, así como cualquier procedimiento adicional que sea necesario durante la cirugía para tratar condiciones imprevistas.
+4. Me han informado que existen otros riesgos incluyendo reacciones alérgicas, infección, problemas cardíacos o de otra índole que son resultados de la cirugía, sedación, anestesia general, procedimiento (s) o tratamiento (s).
 
-6. He proporcionado información completa y veraz sobre mi historial médico, alergias, medicamentos que tomo y cualquier otra condición relevante.
+5. He sido informado (a) que tengo la opción de no hacerme el tratamiento y comprendo los posibles resultados al negar a hacerme la cirugía, sedación, anestesia general, procedimiento (s) o tratamiento (s).
 
-7. Acepto seguir las instrucciones pre y postoperatorias proporcionadas por el equipo médico.
+6. Doy mi consentimiento a la administración de medicamentos que me sean administrados por o con instrucciones de la persona que me haga el (los) procedimiento (s) o tratamiento (s) con el propósito (s) de reducir el dolor, incomodidad o estrés que pueda estar experimentando.
 
-Por medio de la presente, otorgo mi consentimiento libre, voluntario e informado para la realización del procedimiento quirúrgico.`;
+7. Si alguna condición imprevista sucediere durante la cirugía, anestesia general y procedimiento (s) o tratamiento (s) sugerido (s). Yo autorizo y solicito que el médico tome la decisión y haga cualquier procedimiento (s) sugerido (s), que podrá ser adicional o diferente o diferente al (a los) procedimiento (s) planificado (s).
+
+8. Doy mi consentimiento para que se elimine en forma adecuada cualquier tejido o cualquier otro material corporal que deba ser removido durante el curso del (de los) procedimiento (s).
+
+9. Estoy consciente y comprendo que la medicina y la cirugía no son ciencias exactas y que no me han dado ninguna garantía de los resultados.
+
+10. Doy mi consentimiento a la observación de mi procedimiento por otros proveedores de salud para propósitos educacionales y doy consentimiento a mi Médico (o asignado) de tomar fotografía, video grabación del procedimiento (que deberá) quedarse bajo la custodia de mi médico para los propósitos que mi Médico crea convenientes y yo he aceptado.
+
+11. Yo, ${data.patientName}, de manera voluntaria, renuncio de toda acción penal, civil y /o administrativa, y de cualquier índole que pudiera corresponderme por la cirugía, sedación, anestesia general, procedimiento (s) o tratamiento (s) que me someteré el día: ${data.day} del mes: ${data.month} del año ${data.year}. A favor del Doctor (a): ${data.doctorName} y de otros médicos asociados seleccionados por el (ella) y también de OFTALMOSERVICIOS DEL SUR OCCIDENTE, SOCIEDAD ANÓNIMA.
+
+HE LEÍDO LOS PÁRRAFOS ANTERIORES Y ME HAN SIDO EXPLICADOS A MI ENTERA SATISFACCIÓN.`;
+
+// Función para calcular edad desde fecha de nacimiento
+const calculateAge = (dob: string | null): number | null => {
+  if (!dob) return null;
+  const birthDate = new Date(dob);
+  const today = new Date();
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const monthDiff = today.getMonth() - birthDate.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+    age--;
+  }
+  return age;
+};
+
+// Nombres de meses en español
+const MONTH_NAMES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 
 interface PendingSurgery {
   id: string;
@@ -40,12 +83,17 @@ interface PendingSurgery {
   ojo_operar: string;
   patient_name: string;
   patient_id: string;
+  patient_dob: string | null;
+  patient_code: string | null;
+  doctor_name: string;
   appointment_time: string;
   encounter_id: string;
 }
 
 export default function ConsentSignatures() {
   const { currentBranch } = useBranch();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const queryClient = useQueryClient();
   const [selectedSurgery, setSelectedSurgery] = useState<PendingSurgery | null>(null);
   const [patientName, setPatientName] = useState('');
@@ -54,6 +102,12 @@ export default function ConsentSignatures() {
   const [witnessHasSigned, setWitnessHasSigned] = useState(false);
   const patientSigRef = useRef<SignaturePadRef>(null);
   const witnessSigRef = useRef<SignaturePadRef>(null);
+
+  // Campos editables del consentimiento
+  const [patientAge, setPatientAge] = useState<string>('');
+  const [patientCode, setPatientCode] = useState('');
+  const [responsableName, setResponsableName] = useState('');
+  const [surgeryDescription, setSurgeryDescription] = useState('');
 
   // Obtener cirugías de hoy sin firma
   const { data: pendingSurgeries = [], isLoading } = useQuery({
@@ -71,7 +125,7 @@ export default function ConsentSignatures() {
         .select(`
           id,
           starts_at,
-          patient:patients(id, first_name, last_name)
+          patient:patients(id, first_name, last_name, dob, code)
         `)
         .eq('branch_id', currentBranch.id)
         .eq('type', 'cirugia')
@@ -90,12 +144,31 @@ export default function ConsentSignatures() {
         .select(`
           id,
           appointment_id,
+          doctor_id,
           surgeries(id, tipo_cirugia, ojo_operar, consent_signature_id)
         `)
         .in('appointment_id', appointmentIds)
         .is('deleted_at', null);
 
       if (encError) throw encError;
+
+      // Obtener los nombres de los doctores
+      const doctorIds = encounters?.map(e => e.doctor_id).filter(Boolean) as string[];
+      let doctorMap: Record<string, string> = {};
+
+      if (doctorIds.length > 0) {
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('user_id, full_name')
+          .in('user_id', doctorIds);
+
+        if (profiles) {
+          doctorMap = profiles.reduce((acc, p) => {
+            acc[p.user_id] = p.full_name;
+            return acc;
+          }, {} as Record<string, string>);
+        }
+      }
 
       // Filtrar cirugías sin firma
       const pending: PendingSurgery[] = [];
@@ -109,12 +182,16 @@ export default function ConsentSignatures() {
           // Solo incluir si no tiene firma
           if (!surgery.consent_signature_id) {
             const patient = apt.patient as any;
+            const doctorName = encounter.doctor_id ? (doctorMap[encounter.doctor_id] || 'Doctor no asignado') : 'Doctor no asignado';
             pending.push({
               id: surgery.id,
               tipo_cirugia: surgery.tipo_cirugia,
               ojo_operar: surgery.ojo_operar,
               patient_name: `${patient.first_name} ${patient.last_name}`,
               patient_id: patient.id,
+              patient_dob: patient.dob,
+              patient_code: patient.code,
+              doctor_name: doctorName,
               appointment_time: format(new Date(apt.starts_at), 'h:mm a', { locale: es }),
               encounter_id: encounter.id,
             });
@@ -146,6 +223,20 @@ export default function ConsentSignatures() {
       const patientSignature = patientSigRef.current.toDataURL();
       const witnessSignature = witnessSigRef.current.toDataURL();
 
+      // Generar el texto del consentimiento con los datos actuales
+      const today = new Date();
+      const finalConsentText = generateConsentText({
+        patientName: patientName.trim(),
+        patientAge: patientAge || 'N/A',
+        patientCode: patientCode || 'N/A',
+        responsable: responsableName,
+        doctorName: selectedSurgery.doctor_name,
+        surgeryDescription: surgeryDescription,
+        day: today.getDate(),
+        month: MONTH_NAMES[today.getMonth()],
+        year: today.getFullYear(),
+      });
+
       // Crear el registro de firma
       const { data: signature, error: sigError } = await supabase
         .from('consent_signatures')
@@ -156,7 +247,7 @@ export default function ConsentSignatures() {
           patient_name: patientName.trim(),
           witness_signature: witnessSignature,
           witness_name: witnessName.trim(),
-          consent_text: CONSENT_TEXT,
+          consent_text: finalConsentText,
           branch_id: currentBranch?.id,
         })
         .select()
@@ -190,6 +281,10 @@ export default function ConsentSignatures() {
     setWitnessName('');
     setPatientHasSigned(false);
     setWitnessHasSigned(false);
+    setPatientAge('');
+    setPatientCode('');
+    setResponsableName('');
+    setSurgeryDescription('');
     patientSigRef.current?.clear();
     witnessSigRef.current?.clear();
   };
@@ -197,6 +292,12 @@ export default function ConsentSignatures() {
   const handleSelectSurgery = (surgery: PendingSurgery) => {
     setSelectedSurgery(surgery);
     setPatientName(surgery.patient_name);
+    // Inicializar campos editables
+    const age = calculateAge(surgery.patient_dob);
+    setPatientAge(age !== null ? String(age) : '');
+    setPatientCode(surgery.patient_code || '');
+    setResponsableName('');
+    setSurgeryDescription(`${surgery.tipo_cirugia} - Ojo ${surgery.ojo_operar}`);
   };
 
   const handleSubmit = () => {
@@ -204,6 +305,45 @@ export default function ConsentSignatures() {
   };
 
   const canSubmit = patientHasSigned && witnessHasSigned && patientName.trim() && witnessName.trim();
+
+  // Show offline message when in local mode
+  if (isLocalMode) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-blue-50 to-white p-6">
+        <div className="max-w-2xl mx-auto">
+          {/* Header */}
+          <div className="text-center mb-8">
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <FileText className="h-8 w-8 text-primary" />
+              <h1 className="text-2xl font-bold text-gray-800">Firma de Consentimientos</h1>
+            </div>
+            <p className="text-gray-600">
+              {currentBranch?.name} - {format(new Date(), "d 'de' MMMM yyyy", { locale: es })}
+            </p>
+          </div>
+
+          {/* Offline message */}
+          <Card>
+            <CardContent className="py-12">
+              <div className="text-center text-gray-500">
+                <WifiOff className="h-16 w-16 mx-auto mb-4 text-orange-500" />
+                <p className="text-xl font-semibold text-gray-700 mb-2">
+                  Modo Sin Conexión
+                </p>
+                <p className="text-gray-600 max-w-md mx-auto">
+                  La firma de consentimientos informados requiere conexión a internet
+                  para garantizar el registro seguro de las firmas digitales.
+                </p>
+                <p className="text-sm text-gray-500 mt-4">
+                  Por favor, reconéctese a internet para acceder a esta funcionalidad.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    );
+  }
 
   // Vista de lista de pacientes pendientes
   if (!selectedSurgery) {
@@ -268,6 +408,20 @@ export default function ConsentSignatures() {
     );
   }
 
+  // Generar texto del consentimiento con datos actuales
+  const today = new Date();
+  const consentText = generateConsentText({
+    patientName: patientName,
+    patientAge: patientAge || 'N/A',
+    patientCode: patientCode || 'N/A',
+    responsable: responsableName,
+    doctorName: selectedSurgery?.doctor_name || 'Doctor no asignado',
+    surgeryDescription: surgeryDescription,
+    day: today.getDate(),
+    month: MONTH_NAMES[today.getMonth()],
+    year: today.getFullYear(),
+  });
+
   // Vista de firma de consentimiento
   return (
     <div className="min-h-screen bg-gradient-to-b from-blue-50 to-white px-8 py-12">
@@ -285,6 +439,60 @@ export default function ConsentSignatures() {
           </div>
         </div>
 
+        {/* Datos editables del paciente */}
+        <Card className="mb-4">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Datos del Paciente</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="patient-age">Edad (años)</Label>
+                <Input
+                  id="patient-age"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={patientAge}
+                  onChange={(e) => setPatientAge(e.target.value.replace(/\D/g, ''))}
+                  placeholder="Edad"
+                />
+              </div>
+              <div>
+                <Label htmlFor="patient-code">Identificación (DPI/CUI)</Label>
+                <Input
+                  id="patient-code"
+                  value={patientCode}
+                  onChange={(e) => setPatientCode(e.target.value)}
+                  placeholder="Número de identificación"
+                />
+              </div>
+              <div>
+                <Label htmlFor="responsable">Responsable (si aplica)</Label>
+                <Input
+                  id="responsable"
+                  value={responsableName}
+                  onChange={(e) => setResponsableName(e.target.value)}
+                  placeholder="Nombre del responsable"
+                />
+              </div>
+              <div>
+                <Label htmlFor="surgery-desc">Cirugía a realizar</Label>
+                <Input
+                  id="surgery-desc"
+                  value={surgeryDescription}
+                  onChange={(e) => setSurgeryDescription(e.target.value)}
+                  placeholder="Descripción de la cirugía"
+                />
+              </div>
+            </div>
+            <div className="mt-3 p-3 bg-gray-50 rounded-lg text-sm text-gray-600">
+              <p><strong>Doctor:</strong> {selectedSurgery.doctor_name}</p>
+              <p><strong>Fecha:</strong> {today.getDate()} de {MONTH_NAMES[today.getMonth()]} de {today.getFullYear()}</p>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Contenido del consentimiento */}
         <Card className="mb-6">
           <CardHeader className="pb-3">
@@ -292,7 +500,7 @@ export default function ConsentSignatures() {
           </CardHeader>
           <CardContent>
             <ScrollArea className="h-[450px] rounded-xl border-2 p-8 bg-white">
-              <pre className="text-xl leading-loose whitespace-pre-wrap font-sans text-gray-800">{CONSENT_TEXT}</pre>
+              <pre className="text-xl leading-loose whitespace-pre-wrap font-sans text-gray-800">{consentText}</pre>
             </ScrollArea>
           </CardContent>
         </Card>

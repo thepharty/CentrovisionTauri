@@ -9,6 +9,13 @@ import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useDraggable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 
 interface DraggableAppointmentBlockProps {
   appointment: Appointment;
@@ -50,6 +57,8 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
   const resizeStartY = useRef<number>(0);
   const resizeStartTime = useRef<Date | null>(null);
   const queryClient = useQueryClient();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   // @dnd-kit draggable
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
@@ -82,7 +91,7 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
   const updateMutation = useMutation({
     mutationFn: async ({ newStartTime, newEndTime }: { newStartTime?: Date; newEndTime?: Date }) => {
       const updates: any = {};
-      
+
       if (newStartTime && newEndTime) {
         // Resizing from top (both times provided)
         updates.starts_at = newStartTime.toISOString();
@@ -102,12 +111,19 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
         updates.ends_at = newEndTime.toISOString();
       }
 
-      const { error } = await supabase
-        .from('appointments')
-        .update(updates)
-        .eq('id', appointment.id);
+      if (isLocalMode) {
+        await invoke('update_appointment', {
+          id: appointment.id,
+          update: updates
+        });
+      } else {
+        const { error } = await supabase
+          .from('appointments')
+          .update(updates)
+          .eq('id', appointment.id);
 
-      if (error) throw error;
+        if (error) throw error;
+      }
     },
     onSuccess: () => {
       // Usar refetch en lugar de invalidate para actualizar los datos sin desmontar el componente

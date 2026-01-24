@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -10,6 +12,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Plus, Pencil, Trash2, Check, X, Eye, EyeOff } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { ScrollArea } from '@/components/ui/scroll-area';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 
 interface SurgeryType {
   id: string;
@@ -37,7 +44,9 @@ const SURGERY_CATEGORIES = ['Segmento Anterior', 'Retina', 'Glaucoma', 'Oculopla
 
 export default function ClinicalOptionsManager() {
   const queryClient = useQueryClient();
-  
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+
   // Estados para agregar nuevos
   const [newSurgeryName, setNewSurgeryName] = useState('');
   const [newSurgeryCategory, setNewSurgeryCategory] = useState('Segmento Anterior');
@@ -50,8 +59,16 @@ export default function ClinicalOptionsManager() {
 
   // Query para cirugías (incluye inactivas para admin)
   const { data: surgeryTypes = [] } = useQuery({
-    queryKey: ['surgery-types-admin'],
+    queryKey: ['surgery-types-admin', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const data = await invoke<SurgeryType[]>('get_surgery_types');
+        // Sort by category then display_order
+        return data.sort((a, b) => {
+          if (a.category !== b.category) return (a.category || '').localeCompare(b.category || '');
+          return a.display_order - b.display_order;
+        });
+      }
       const { data, error } = await supabase
         .from('surgery_types')
         .select('*')
@@ -64,8 +81,12 @@ export default function ClinicalOptionsManager() {
 
   // Query para estudios
   const { data: studyTypes = [] } = useQuery({
-    queryKey: ['study-types-admin'],
+    queryKey: ['study-types-admin', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const data = await invoke<StudyType[]>('get_study_types');
+        return data.sort((a, b) => a.display_order - b.display_order);
+      }
       const { data, error } = await supabase
         .from('study_types')
         .select('*')
@@ -77,8 +98,12 @@ export default function ClinicalOptionsManager() {
 
   // Query para procedimientos
   const { data: procedureTypes = [] } = useQuery({
-    queryKey: ['procedure-types-admin'],
+    queryKey: ['procedure-types-admin', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const data = await invoke<ProcedureType[]>('get_procedure_types');
+        return data.sort((a, b) => a.display_order - b.display_order);
+      }
       const { data, error } = await supabase
         .from('procedure_types')
         .select('*')
@@ -101,109 +126,170 @@ export default function ClinicalOptionsManager() {
   // Agregar cirugía
   const handleAddSurgery = async () => {
     if (!newSurgeryName.trim()) return;
-    
+
     const maxOrder = surgeryTypes
       .filter(s => s.category === newSurgeryCategory)
       .reduce((max, s) => Math.max(max, s.display_order), 0);
-    
-    const { error } = await supabase.from('surgery_types').insert({
-      name: newSurgeryName.trim(),
-      category: newSurgeryCategory,
-      display_order: maxOrder + 1,
-    });
-    
-    if (error) {
-      toast({ title: 'Error', description: 'No se pudo agregar la cirugía', variant: 'destructive' });
-    } else {
+
+    try {
+      if (isLocalMode) {
+        await invoke('create_surgery_type', {
+          input: {
+            name: newSurgeryName.trim(),
+            category: newSurgeryCategory,
+            display_order: maxOrder + 1,
+          }
+        });
+      } else {
+        const { error } = await supabase.from('surgery_types').insert({
+          name: newSurgeryName.trim(),
+          category: newSurgeryCategory,
+          display_order: maxOrder + 1,
+        });
+        if (error) throw error;
+      }
       toast({ title: 'Cirugía agregada' });
       setNewSurgeryName('');
       invalidateAll();
+    } catch (error) {
+      toast({ title: 'Error', description: 'No se pudo agregar la cirugía', variant: 'destructive' });
     }
   };
 
   // Agregar estudio
   const handleAddStudy = async () => {
     if (!newStudyName.trim()) return;
-    
+
     const maxOrder = studyTypes.reduce((max, s) => Math.max(max, s.display_order), 0);
-    
-    const { error } = await supabase.from('study_types').insert({
-      name: newStudyName.trim(),
-      display_order: maxOrder + 1,
-    });
-    
-    if (error) {
-      toast({ title: 'Error', description: 'No se pudo agregar el estudio', variant: 'destructive' });
-    } else {
+
+    try {
+      if (isLocalMode) {
+        await invoke('create_study_type', {
+          input: {
+            name: newStudyName.trim(),
+            display_order: maxOrder + 1,
+          }
+        });
+      } else {
+        const { error } = await supabase.from('study_types').insert({
+          name: newStudyName.trim(),
+          display_order: maxOrder + 1,
+        });
+        if (error) throw error;
+      }
       toast({ title: 'Estudio agregado' });
       setNewStudyName('');
       invalidateAll();
+    } catch (error) {
+      toast({ title: 'Error', description: 'No se pudo agregar el estudio', variant: 'destructive' });
     }
   };
 
   // Agregar procedimiento
   const handleAddProcedure = async () => {
     if (!newProcedureName.trim()) return;
-    
+
     const maxOrder = procedureTypes.reduce((max, p) => Math.max(max, p.display_order), 0);
-    
-    const { error } = await supabase.from('procedure_types').insert({
-      name: newProcedureName.trim(),
-      display_order: maxOrder + 1,
-    });
-    
-    if (error) {
-      toast({ title: 'Error', description: 'No se pudo agregar el procedimiento', variant: 'destructive' });
-    } else {
+
+    try {
+      if (isLocalMode) {
+        await invoke('create_procedure_type', {
+          input: {
+            name: newProcedureName.trim(),
+            display_order: maxOrder + 1,
+          }
+        });
+      } else {
+        const { error } = await supabase.from('procedure_types').insert({
+          name: newProcedureName.trim(),
+          display_order: maxOrder + 1,
+        });
+        if (error) throw error;
+      }
       toast({ title: 'Procedimiento agregado' });
       setNewProcedureName('');
       invalidateAll();
+    } catch (error) {
+      toast({ title: 'Error', description: 'No se pudo agregar el procedimiento', variant: 'destructive' });
     }
   };
 
   // Actualizar nombre
   const handleUpdateName = async (table: 'surgery_types' | 'study_types' | 'procedure_types', id: string) => {
     if (!editingName.trim()) return;
-    
-    const { error } = await supabase
-      .from(table)
-      .update({ name: editingName.trim() } as any)
-      .eq('id', id);
-    
-    if (error) {
-      toast({ title: 'Error', description: 'No se pudo actualizar', variant: 'destructive' });
-    } else {
+
+    try {
+      if (isLocalMode) {
+        const commandMap = {
+          'surgery_types': 'update_surgery_type',
+          'study_types': 'update_study_type',
+          'procedure_types': 'update_procedure_type',
+        };
+        await invoke(commandMap[table], {
+          id,
+          update: { name: editingName.trim() }
+        });
+      } else {
+        const { error } = await supabase
+          .from(table)
+          .update({ name: editingName.trim() } as any)
+          .eq('id', id);
+        if (error) throw error;
+      }
       toast({ title: 'Actualizado' });
       setEditingId(null);
       setEditingName('');
       invalidateAll();
+    } catch (error) {
+      toast({ title: 'Error', description: 'No se pudo actualizar', variant: 'destructive' });
     }
   };
 
   // Alternar activo/inactivo
   const handleToggleActive = async (table: 'surgery_types' | 'study_types' | 'procedure_types', id: string, currentActive: boolean) => {
-    const { error } = await supabase
-      .from(table)
-      .update({ active: !currentActive } as any)
-      .eq('id', id);
-    
-    if (error) {
-      toast({ title: 'Error', description: 'No se pudo actualizar', variant: 'destructive' });
-    } else {
+    try {
+      if (isLocalMode) {
+        const commandMap = {
+          'surgery_types': 'update_surgery_type',
+          'study_types': 'update_study_type',
+          'procedure_types': 'update_procedure_type',
+        };
+        await invoke(commandMap[table], {
+          id,
+          update: { active: !currentActive }
+        });
+      } else {
+        const { error } = await supabase
+          .from(table)
+          .update({ active: !currentActive } as any)
+          .eq('id', id);
+        if (error) throw error;
+      }
       toast({ title: currentActive ? 'Desactivado' : 'Activado' });
       invalidateAll();
+    } catch (error) {
+      toast({ title: 'Error', description: 'No se pudo actualizar', variant: 'destructive' });
     }
   };
 
   // Eliminar
   const handleDelete = async (table: 'surgery_types' | 'study_types' | 'procedure_types', id: string) => {
-    const { error } = await supabase.from(table).delete().eq('id', id);
-    
-    if (error) {
-      toast({ title: 'Error', description: 'No se pudo eliminar', variant: 'destructive' });
-    } else {
+    try {
+      if (isLocalMode) {
+        const commandMap = {
+          'surgery_types': 'delete_surgery_type',
+          'study_types': 'delete_study_type',
+          'procedure_types': 'delete_procedure_type',
+        };
+        await invoke(commandMap[table], { id });
+      } else {
+        const { error } = await supabase.from(table).delete().eq('id', id);
+        if (error) throw error;
+      }
       toast({ title: 'Eliminado' });
       invalidateAll();
+    } catch (error) {
+      toast({ title: 'Error', description: 'No se pudo eliminar', variant: 'destructive' });
     }
   };
 

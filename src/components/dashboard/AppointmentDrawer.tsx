@@ -29,7 +29,14 @@ import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
 import { AppointmentDialog } from './AppointmentDialog';
+
+// Check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 
 interface AppointmentDrawerProps {
   appointment: Appointment | null;
@@ -42,16 +49,30 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
   const { toast } = useToast();
   const navigate = useNavigate();
   const { hasRole, roles } = useAuth();
+  const { connectionMode } = useNetworkStatus();
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [hasEncounter, setHasEncounter] = useState(false);
   const [encounterId, setEncounterId] = useState<string | null>(null);
 
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+
   // Check if appointment has invoice
   const { data: invoice } = useQuery({
-    queryKey: ['appointment-invoice-detail', appointment?.id],
+    queryKey: ['appointment-invoice-detail', appointment?.id, connectionMode],
     queryFn: async () => {
       if (!appointment) return null;
+
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[AppointmentDrawer] Getting invoice from PostgreSQL local');
+        const data = await invoke<{ id: string; invoice_number: string } | null>('get_invoice_by_appointment', {
+          appointmentId: appointment.id,
+        });
+        return data;
+      }
+
+      // Modo Supabase
       const { data } = await supabase
         .from('invoices')
         .select('id, invoice_number')
@@ -72,8 +93,19 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
 
   const checkExistingEncounter = async () => {
     if (!appointment) return;
-    
+
     // CRÍTICO: Buscar encounter vinculado específicamente a ESTE appointment
+    if (isLocalMode) {
+      console.log('[AppointmentDrawer] Checking encounter from PostgreSQL local');
+      const encounter = await invoke<{ id: string } | null>('get_encounter_by_appointment', {
+        appointmentId: appointment.id,
+      });
+      setHasEncounter(!!encounter);
+      setEncounterId(encounter?.id || null);
+      return;
+    }
+
+    // Modo Supabase
     const { data: encounters } = await supabase
       .from('encounters')
       .select('id')
@@ -93,18 +125,21 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
   const isAdmin = hasRole('admin');
 
   const handleCheckIn = async () => {
-    const { error } = await supabase
-      .from('appointments')
-      .update({ status: 'checked_in' })
-      .eq('id', appointment.id);
+    try {
+      if (isLocalMode) {
+        console.log('[AppointmentDrawer] Check-in via PostgreSQL local');
+        await invoke('update_appointment', {
+          id: appointment.id,
+          status: 'checked_in',
+        });
+      } else {
+        const { error } = await supabase
+          .from('appointments')
+          .update({ status: 'checked_in' })
+          .eq('id', appointment.id);
+        if (error) throw error;
+      }
 
-    if (error) {
-      toast({
-        title: 'Error',
-        description: 'No se pudo registrar el check-in',
-        variant: 'destructive',
-      });
-    } else {
       toast({
         title: 'Check-in registrado',
         description: 'El paciente está en sala de espera',
@@ -112,22 +147,31 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
       queryClient.invalidateQueries({ queryKey: ['appointments'] });
       queryClient.invalidateQueries({ queryKey: ['today-appointments'] });
       onClose();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: 'No se pudo registrar el check-in',
+        variant: 'destructive',
+      });
     }
   };
 
   const handlePreconsultaReady = async () => {
-    const { error } = await supabase
-      .from('appointments')
-      .update({ status: 'preconsulta_ready' })
-      .eq('id', appointment.id);
+    try {
+      if (isLocalMode) {
+        console.log('[AppointmentDrawer] Preconsulta ready via PostgreSQL local');
+        await invoke('update_appointment', {
+          id: appointment.id,
+          status: 'preconsulta_ready',
+        });
+      } else {
+        const { error } = await supabase
+          .from('appointments')
+          .update({ status: 'preconsulta_ready' })
+          .eq('id', appointment.id);
+        if (error) throw error;
+      }
 
-    if (error) {
-      toast({
-        title: 'Error',
-        description: 'No se pudo marcar la preconsulta como lista',
-        variant: 'destructive',
-      });
-    } else {
       toast({
         title: 'Preconsulta lista',
         description: 'El paciente está listo para atender',
@@ -135,22 +179,31 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
       queryClient.invalidateQueries({ queryKey: ['appointments'] });
       queryClient.invalidateQueries({ queryKey: ['today-appointments'] });
       onClose();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: 'No se pudo marcar la preconsulta como lista',
+        variant: 'destructive',
+      });
     }
   };
 
   const handleMarkDone = async () => {
-    const { error } = await supabase
-      .from('appointments')
-      .update({ status: 'done' })
-      .eq('id', appointment.id);
+    try {
+      if (isLocalMode) {
+        console.log('[AppointmentDrawer] Mark done via PostgreSQL local');
+        await invoke('update_appointment', {
+          id: appointment.id,
+          status: 'done',
+        });
+      } else {
+        const { error } = await supabase
+          .from('appointments')
+          .update({ status: 'done' })
+          .eq('id', appointment.id);
+        if (error) throw error;
+      }
 
-    if (error) {
-      toast({
-        title: 'Error',
-        description: 'No se pudo marcar como completada',
-        variant: 'destructive',
-      });
-    } else {
       toast({
         title: 'Cita completada',
         description: 'La cita ha sido marcada como completada',
@@ -158,6 +211,12 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
       queryClient.invalidateQueries({ queryKey: ['appointments'] });
       queryClient.invalidateQueries({ queryKey: ['today-appointments'] });
       onClose();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: 'No se pudo marcar como completada',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -168,13 +227,6 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
       onClose();
       return;
     }
-
-    // CRÍTICO: Buscar encounter vinculado específicamente a ESTE appointment
-    const { data: encounters } = await supabase
-      .from('encounters')
-      .select('id')
-      .eq('appointment_id', appointment.id)
-      .limit(1);
 
     // Determinar la ruta según el tipo de cita
     let route = '/consultation';
@@ -194,31 +246,65 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
       encounterType = 'quirurgico';
     }
 
-    if (encounters && encounters.length > 0) {
-      navigate(`${route}/${encounters[0].id}`);
-    } else {
-      // Create new encounter VINCULADO al appointment desde el inicio
-      const { data: newEncounter, error } = await supabase
-        .from('encounters')
-        .insert([{
-          patient_id: appointment.patient_id,
-          type: encounterType,
-          doctor_id: appointment.doctor_id,
-          appointment_id: appointment.id, // CRÍTICO: Vincular desde el inicio
-          date: appointment.starts_at, // Usar la fecha del appointment
-        }])
-        .select()
-        .single();
+    try {
+      // CRÍTICO: Buscar encounter vinculado específicamente a ESTE appointment
+      let existingEncounter: { id: string } | null = null;
 
-      if (error) {
-        toast({
-          title: 'Error',
-          description: 'No se pudo crear el encuentro',
-          variant: 'destructive',
+      if (isLocalMode) {
+        console.log('[AppointmentDrawer] Getting encounter from PostgreSQL local');
+        existingEncounter = await invoke<{ id: string } | null>('get_encounter_by_appointment', {
+          appointmentId: appointment.id,
         });
       } else {
-        navigate(`${route}/${newEncounter.id}`);
+        const { data: encounters } = await supabase
+          .from('encounters')
+          .select('id')
+          .eq('appointment_id', appointment.id)
+          .limit(1);
+        existingEncounter = encounters && encounters.length > 0 ? encounters[0] : null;
       }
+
+      if (existingEncounter) {
+        navigate(`${route}/${existingEncounter.id}`);
+      } else {
+        // Create new encounter VINCULADO al appointment desde el inicio
+        let newEncounterId: string;
+
+        if (isLocalMode) {
+          console.log('[AppointmentDrawer] Creating encounter via PostgreSQL local');
+          const newEncounter = await invoke<{ id: string }>('create_encounter', {
+            encounter: {
+              patient_id: appointment.patient_id,
+              type: encounterType,
+              doctor_id: appointment.doctor_id,
+              appointment_id: appointment.id,
+            }
+          });
+          newEncounterId = newEncounter.id;
+        } else {
+          const { data: newEncounter, error } = await supabase
+            .from('encounters')
+            .insert([{
+              patient_id: appointment.patient_id,
+              type: encounterType,
+              doctor_id: appointment.doctor_id,
+              appointment_id: appointment.id,
+              date: appointment.starts_at,
+            }])
+            .select()
+            .single();
+          if (error) throw error;
+          newEncounterId = newEncounter.id;
+        }
+
+        navigate(`${route}/${newEncounterId}`);
+      }
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: 'No se pudo crear el encuentro',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -229,19 +315,18 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
   const handleDeleteConfirm = async () => {
     setDeleteDialogOpen(false);
 
-    const { error } = await supabase
-      .from('appointments')
-      .delete()
-      .eq('id', appointment.id);
+    try {
+      if (isLocalMode) {
+        console.log('[AppointmentDrawer] Deleting appointment via PostgreSQL local');
+        await invoke('delete_appointment', { id: appointment.id });
+      } else {
+        const { error } = await supabase
+          .from('appointments')
+          .delete()
+          .eq('id', appointment.id);
+        if (error) throw error;
+      }
 
-    if (error) {
-      console.error('Error eliminando cita:', error);
-      toast({
-        title: 'Error',
-        description: `No se pudo eliminar la cita: ${error.message}`,
-        variant: 'destructive',
-      });
-    } else {
       toast({
         title: 'Cita eliminada',
         description: 'La cita ha sido eliminada exitosamente',
@@ -249,32 +334,23 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
       queryClient.invalidateQueries({ queryKey: ['appointments'] });
       queryClient.invalidateQueries({ queryKey: ['today-appointments'] });
       onClose();
+    } catch (error: any) {
+      console.error('Error eliminando cita:', error);
+      toast({
+        title: 'Error',
+        description: `No se pudo eliminar la cita: ${error?.message || error}`,
+        variant: 'destructive',
+      });
     }
   };
 
   const handleReviewConsultation = async () => {
     if (!appointment) return;
 
-    // CRÍTICO: Buscar encounter vinculado específicamente a ESTE appointment
-    const { data: encounters, error } = await supabase
-      .from('encounters')
-      .select('id')
-      .eq('appointment_id', appointment.id)
-      .limit(1);
-
-    if (error) {
-      toast({
-        title: 'Error',
-        description: 'No se pudo buscar la consulta',
-        variant: 'destructive',
-      });
-      return;
-    }
-
     // Determinar la ruta según el tipo de cita
     let route = '/consultation';
     let encounterType: 'consulta' | 'posop' | 'quirurgico' | 'urgencia' = 'consulta';
-    
+
     if (['reconsulta_menos_3m', 'reconsulta_mas_3m', 'post_operado', 'lectura_resultados'].includes(appointment.type)) {
       route = '/reconsulta';
     } else if (appointment.type === 'cirugia') {
@@ -284,55 +360,93 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
       route = '/procedimiento';
       encounterType = 'quirurgico';
     }
-    
+
     if (appointment.type === 'post_operado') {
       encounterType = 'posop';
     }
 
-    if (encounters && encounters.length > 0) {
-      // Si existe el encounter, navegar a él
-      navigate(`${route}/${encounters[0].id}`);
-      onClose();
-    } else {
-      // Si NO existe, crearlo automáticamente
-      const { data: newEncounter, error: createError } = await supabase
-        .from('encounters')
-        .insert([{
-          patient_id: appointment.patient_id,
-          type: encounterType,
-          doctor_id: appointment.doctor_id,
-          appointment_id: appointment.id,
-          date: appointment.starts_at,
-        }])
-        .select()
-        .single();
+    try {
+      // CRÍTICO: Buscar encounter vinculado específicamente a ESTE appointment
+      let existingEncounter: { id: string } | null = null;
 
-      if (createError) {
-        toast({
-          title: 'Error',
-          description: 'No se pudo crear el encuentro',
-          variant: 'destructive',
+      if (isLocalMode) {
+        console.log('[AppointmentDrawer] Review - Getting encounter from PostgreSQL local');
+        existingEncounter = await invoke<{ id: string } | null>('get_encounter_by_appointment', {
+          appointmentId: appointment.id,
         });
       } else {
-        navigate(`${route}/${newEncounter.id}`);
+        const { data: encounters, error } = await supabase
+          .from('encounters')
+          .select('id')
+          .eq('appointment_id', appointment.id)
+          .limit(1);
+        if (error) throw error;
+        existingEncounter = encounters && encounters.length > 0 ? encounters[0] : null;
+      }
+
+      if (existingEncounter) {
+        // Si existe el encounter, navegar a él
+        navigate(`${route}/${existingEncounter.id}`);
+        onClose();
+      } else {
+        // Si NO existe, crearlo automáticamente
+        let newEncounterId: string;
+
+        if (isLocalMode) {
+          console.log('[AppointmentDrawer] Review - Creating encounter via PostgreSQL local');
+          const newEncounter = await invoke<{ id: string }>('create_encounter', {
+            encounter: {
+              patient_id: appointment.patient_id,
+              type: encounterType,
+              doctor_id: appointment.doctor_id,
+              appointment_id: appointment.id,
+            }
+          });
+          newEncounterId = newEncounter.id;
+        } else {
+          const { data: newEncounter, error: createError } = await supabase
+            .from('encounters')
+            .insert([{
+              patient_id: appointment.patient_id,
+              type: encounterType,
+              doctor_id: appointment.doctor_id,
+              appointment_id: appointment.id,
+              date: appointment.starts_at,
+            }])
+            .select()
+            .single();
+          if (createError) throw createError;
+          newEncounterId = newEncounter.id;
+        }
+
+        navigate(`${route}/${newEncounterId}`);
         onClose();
       }
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: 'No se pudo buscar o crear la consulta',
+        variant: 'destructive',
+      });
     }
   };
 
   const handleCancel = async () => {
-    const { error } = await supabase
-      .from('appointments')
-      .update({ status: 'cancelled' })
-      .eq('id', appointment.id);
+    try {
+      if (isLocalMode) {
+        console.log('[AppointmentDrawer] Cancel appointment via PostgreSQL local');
+        await invoke('update_appointment', {
+          id: appointment.id,
+          status: 'cancelled',
+        });
+      } else {
+        const { error } = await supabase
+          .from('appointments')
+          .update({ status: 'cancelled' })
+          .eq('id', appointment.id);
+        if (error) throw error;
+      }
 
-    if (error) {
-      toast({
-        title: 'Error',
-        description: 'No se pudo cancelar la cita',
-        variant: 'destructive',
-      });
-    } else {
       toast({
         title: 'Cita cancelada',
         description: 'La cita ha sido cancelada',
@@ -340,6 +454,12 @@ export function AppointmentDrawer({ appointment, open, onClose }: AppointmentDra
       queryClient.invalidateQueries({ queryKey: ['appointments'] });
       queryClient.invalidateQueries({ queryKey: ['today-appointments'] });
       onClose();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: 'No se pudo cancelar la cita',
+        variant: 'destructive',
+      });
     }
   };
 

@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -11,8 +13,15 @@ import { Search, AlertTriangle, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { useBranch } from '@/hooks/useBranch';
 
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
 export default function LotManagement() {
   const { currentBranch } = useBranch();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const queryClient = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [searchProduct, setSearchProduct] = useState('');
@@ -24,11 +33,23 @@ export default function LotManagement() {
 
   // Buscar productos que requieren lote
   const { data: products } = useQuery({
-    queryKey: ['lot-products', searchProduct, currentBranch?.id],
+    queryKey: ['lot-products', searchProduct, currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!searchProduct || searchProduct.length < 2) return [];
       if (!currentBranch?.id) return [];
-      
+
+      if (isLocalMode) {
+        const allItems = await invoke<any[]>('get_inventory_items', { branchId: currentBranch.id });
+        const searchLower = searchProduct.toLowerCase();
+        return allItems
+          .filter(item =>
+            item.active !== false &&
+            item.requires_lot === true &&
+            (item.name?.toLowerCase().includes(searchLower) ||
+             item.code?.toLowerCase().includes(searchLower)))
+          .slice(0, 10);
+      }
+
       const { data } = await supabase
         .from('inventory_items')
         .select('*')
@@ -44,10 +65,14 @@ export default function LotManagement() {
 
   // Obtener todos los lotes
   const { data: allLots } = useQuery({
-    queryKey: ['all-lots', currentBranch?.id],
+    queryKey: ['all-lots', currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!currentBranch?.id) return [];
-      
+
+      if (isLocalMode) {
+        return await invoke<any[]>('get_all_inventory_lots', { branchId: currentBranch.id });
+      }
+
       const { data } = await supabase
         .from('inventory_lots')
         .select(`
@@ -67,15 +92,22 @@ export default function LotManagement() {
       if (!lotNumber) throw new Error('Ingrese el número de lote');
       if (!quantity || Number(quantity) <= 0) throw new Error('Ingrese una cantidad válida');
 
+      const lotData = {
+        item_id: selectedProduct.id,
+        lot_number: lotNumber,
+        quantity: Number(quantity),
+        expiry_date: expiryDate || null,
+        cost_price: costPrice ? Number(costPrice) : null,
+      };
+
+      if (isLocalMode) {
+        await invoke('create_inventory_lot', { lot: lotData });
+        return;
+      }
+
       const { error } = await supabase
         .from('inventory_lots')
-        .insert({
-          item_id: selectedProduct.id,
-          lot_number: lotNumber,
-          quantity: Number(quantity),
-          expiry_date: expiryDate || null,
-          cost_price: costPrice ? Number(costPrice) : null,
-        });
+        .insert(lotData);
 
       if (error) throw error;
     },

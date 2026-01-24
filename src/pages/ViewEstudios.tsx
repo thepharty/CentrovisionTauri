@@ -9,6 +9,49 @@ import { es } from 'date-fns/locale';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { PdfViewer } from '@/components/pdf/PdfViewer';
 import { PdfThumbnail } from '@/components/pdf/PdfThumbnail';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+import { readFileAsDataUrl } from '@/lib/localStorageHelper';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+// Types for Tauri commands
+interface TauriStudyFile {
+  id: string;
+  study_id: string;
+  file_path: string;
+  mime_type: string | null;
+  side: string | null;
+  extracted_summary: string | null;
+}
+
+interface TauriStudy {
+  id: string;
+  appointment_id: string | null;
+  patient_id: string;
+  study_type: string;
+  status: string;
+  ordered_by: string | null;
+  date: string | null;
+  notes: string | null;
+  study_files: TauriStudyFile[] | null;
+  patient: {
+    id: string;
+    first_name: string;
+    last_name: string;
+    code: string | null;
+    phone: string | null;
+  } | null;
+}
+
+interface TauriPatient {
+  id: string;
+  first_name: string;
+  last_name: string;
+}
 
 type StudyFile = {
   id: string;
@@ -36,6 +79,8 @@ export default function ViewEstudios() {
   const { patientId } = useParams<{ patientId: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const [selectedStudy, setSelectedStudy] = useState<Study | null>(null);
   const [selectedFileIndex, setSelectedFileIndex] = useState<number>(0);
   const [zoom, setZoom] = useState(1);
@@ -52,8 +97,50 @@ export default function ViewEstudios() {
 
   // Cargar estudios del paciente
   const { data: studies, isLoading: loadingStudies } = useQuery({
-    queryKey: ['patient-studies', patientId],
+    queryKey: ['patient-studies', patientId, isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        // Get studies from local PostgreSQL via Tauri
+        const tauriStudies = await invoke<TauriStudy[]>('get_studies_by_patient', {
+          patientId: patientId!
+        });
+
+        // Map Tauri studies to expected format and load file URLs from local storage
+        const studiesWithUrls = await Promise.all(
+          tauriStudies.map(async (study) => {
+            const filesWithUrls = await Promise.all(
+              (study.study_files || []).map(async (file) => {
+                // Load file from local SMB storage
+                const signedUrl = await readFileAsDataUrl('studies', file.file_path);
+                return {
+                  id: file.id,
+                  file_path: file.file_path,
+                  mime_type: file.mime_type,
+                  signedUrl: signedUrl || ''
+                };
+              })
+            );
+
+            return {
+              id: study.id,
+              title: study.study_type, // Map study_type to title
+              eye_side: (study.study_files?.[0]?.side as 'OD' | 'OI' | 'OU') || 'OU', // Use first file's side or default
+              comments: study.notes,
+              created_at: study.date || new Date().toISOString(),
+              appointment_id: study.appointment_id || '',
+              patient_id: study.patient_id,
+              study_files: filesWithUrls,
+              patient: study.patient ? {
+                first_name: study.patient.first_name,
+                last_name: study.patient.last_name
+              } : undefined
+            } as Study;
+          })
+        );
+
+        return studiesWithUrls;
+      }
+
       const { data, error } = await supabase
         .from('studies')
         .select('*, study_files(*), patient:patients(first_name, last_name)')
@@ -88,8 +175,18 @@ export default function ViewEstudios() {
 
   // Cargar información del paciente
   const { data: patient } = useQuery({
-    queryKey: ['patient', patientId],
+    queryKey: ['patient', patientId, isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const patientData = await invoke<TauriPatient>('get_patient_by_id', {
+          id: patientId!
+        });
+        return {
+          first_name: patientData.first_name,
+          last_name: patientData.last_name
+        };
+      }
+
       const { data, error } = await supabase
         .from('patients')
         .select('first_name, last_name')

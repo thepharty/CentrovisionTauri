@@ -3,6 +3,8 @@
 
 use crate::commands::{
     Appointment, Branch, Patient, PatientEmbed, Profile, Room,
+    BranchInput, BranchUpdate, RoomInput, RoomUpdate,
+    UserWithProfile, PendingRegistration,
     AppointmentInput, AppointmentUpdate, PatientInput, PatientUpdate,
     Encounter, DoctorEmbed, EncounterInput, EncounterUpdate,
     ExamEye, ExamEyeInput,
@@ -16,10 +18,20 @@ use crate::commands::{
     InventoryItem, InventoryItemInput, InventoryItemUpdate, Supplier,
     CRMPipeline, CRMPipelineInput, CRMPipelineStage, CRMPipelineNote, CRMPipelineNoteInput,
     CRMProcedureType, BranchEmbed,
+    CRMUnreadActivity, CRMActivityLog, CRMActivityPatient, CRMActivityProcedureType, CRMActivityCreator,
     ScheduleBlock, ScheduleBlockInput,
     SurgeryType, StudyType, ProcedureTypeConfig,
+    SurgeryTypeInput, StudyTypeInput, ProcedureTypeInput, ClinicalTypeUpdate,
     ReferringDoctor, ReferringDoctorInput,
     SyncPendingStatus, SyncPendingByTable, SyncPendingDetail,
+    AppSetting, ConsentSignature,
+    RoomInventoryCategory, RoomInventoryCategoryInput, RoomInventoryCategoryUpdate,
+    RoomInventoryItem, RoomInventoryItemInput, RoomInventoryItemUpdate,
+    RoomInventoryMovement, RoomInventoryMovementInput,
+    SupplierInput, InventoryLot, InventoryLotInput, InventoryLotWithProduct,
+    InventoryMovement, InventoryMovementInput,
+    InventoryItemEmbed, InventoryLotEmbed,
+    ServiceSales, ServiceDetail, InventorySales, InventoryDetail, PaymentMethodSummary,
 };
 use crate::config::LocalServerConfig;
 use deadpool_postgres::{Config, Pool, Runtime, PoolError};
@@ -82,14 +94,14 @@ impl PostgresPool {
     // READ OPERATIONS
     // ============================================================
 
-    /// Get all active branches
+    /// Get all branches (including inactive for admin)
     pub async fn get_branches(&self) -> Result<Vec<Branch>, String> {
         let client = self.pool.get().await.map_err(|e| e.to_string())?;
 
         let rows = client
             .query(
-                "SELECT id, name, code, address, phone, active
-                 FROM branches WHERE active = true ORDER BY code",
+                "SELECT id, name, code, address, phone, active, theme_primary_hsl, pdf_header_url
+                 FROM branches ORDER BY name",
                 &[],
             )
             .await
@@ -104,21 +116,156 @@ impl PostgresPool {
                 address: row.get(3),
                 phone: row.get(4),
                 active: row.get(5),
+                theme_primary_hsl: row.get(6),
+                pdf_header_url: row.get(7),
             })
             .collect();
 
         Ok(branches)
     }
 
-    /// Get rooms by branch
+    /// Create a new branch
+    pub async fn create_branch(&self, input: &BranchInput) -> Result<Branch, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+
+        let row = client
+            .query_one(
+                "INSERT INTO branches (name, address, phone, active, code)
+                 VALUES ($1, $2, $3, true, NULL)
+                 RETURNING id, name, code, address, phone, active, theme_primary_hsl, pdf_header_url",
+                &[&input.name, &input.address, &input.phone],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(Branch {
+            id: row.get::<_, uuid::Uuid>(0).to_string(),
+            name: row.get(1),
+            code: row.get(2),
+            address: row.get(3),
+            phone: row.get(4),
+            active: row.get(5),
+            theme_primary_hsl: row.get(6),
+            pdf_header_url: row.get(7),
+        })
+    }
+
+    /// Update an existing branch
+    pub async fn update_branch(&self, id: &str, update: &BranchUpdate) -> Result<Branch, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
+
+        // Build dynamic update query
+        let mut set_clauses = Vec::new();
+        let mut param_index = 1;
+
+        if update.name.is_some() {
+            param_index += 1;
+            set_clauses.push(format!("name = ${}", param_index));
+        }
+        if update.address.is_some() {
+            param_index += 1;
+            set_clauses.push(format!("address = ${}", param_index));
+        }
+        if update.phone.is_some() {
+            param_index += 1;
+            set_clauses.push(format!("phone = ${}", param_index));
+        }
+        if update.active.is_some() {
+            param_index += 1;
+            set_clauses.push(format!("active = ${}", param_index));
+        }
+        if update.theme_primary_hsl.is_some() {
+            param_index += 1;
+            set_clauses.push(format!("theme_primary_hsl = ${}", param_index));
+        }
+        if update.pdf_header_url.is_some() {
+            param_index += 1;
+            set_clauses.push(format!("pdf_header_url = ${}", param_index));
+        }
+
+        if set_clauses.is_empty() {
+            return Err("No fields to update".to_string());
+        }
+
+        let query = format!(
+            "UPDATE branches SET {} WHERE id = $1
+             RETURNING id, name, code, address, phone, active, theme_primary_hsl, pdf_header_url",
+            set_clauses.join(", ")
+        );
+
+        // Build params dynamically - this is a bit verbose but type-safe
+        let row = if let (Some(name), Some(address), Some(phone), Some(active), Some(theme), Some(pdf)) =
+            (&update.name, &update.address, &update.phone, &update.active, &update.theme_primary_hsl, &update.pdf_header_url)
+        {
+            client.query_one(&query, &[&branch_uuid, name, address, phone, active, theme, pdf]).await
+        } else if let (Some(name), Some(address), Some(phone), Some(active), Some(theme)) =
+            (&update.name, &update.address, &update.phone, &update.active, &update.theme_primary_hsl)
+        {
+            client.query_one(&query, &[&branch_uuid, name, address, phone, active, theme]).await
+        } else if let (Some(name), Some(address), Some(phone), Some(active)) =
+            (&update.name, &update.address, &update.phone, &update.active)
+        {
+            client.query_one(&query, &[&branch_uuid, name, address, phone, active]).await
+        } else {
+            // For simpler updates, use a fixed query
+            client
+                .query_one(
+                    "UPDATE branches SET
+                        name = COALESCE($2, name),
+                        address = COALESCE($3, address),
+                        phone = COALESCE($4, phone),
+                        active = COALESCE($5, active),
+                        theme_primary_hsl = COALESCE($6, theme_primary_hsl),
+                        pdf_header_url = COALESCE($7, pdf_header_url)
+                     WHERE id = $1
+                     RETURNING id, name, code, address, phone, active, theme_primary_hsl, pdf_header_url",
+                    &[&branch_uuid, &update.name, &update.address, &update.phone, &update.active, &update.theme_primary_hsl, &update.pdf_header_url],
+                )
+                .await
+        }.map_err(|e| e.to_string())?;
+
+        Ok(Branch {
+            id: row.get::<_, uuid::Uuid>(0).to_string(),
+            name: row.get(1),
+            code: row.get(2),
+            address: row.get(3),
+            phone: row.get(4),
+            active: row.get(5),
+            theme_primary_hsl: row.get(6),
+            pdf_header_url: row.get(7),
+        })
+    }
+
+    /// Delete a branch and its rooms
+    pub async fn delete_branch(&self, id: &str) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
+
+        // First delete associated rooms
+        client
+            .execute("DELETE FROM rooms WHERE branch_id = $1", &[&branch_uuid])
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Then delete the branch
+        client
+            .execute("DELETE FROM branches WHERE id = $1", &[&branch_uuid])
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
+    /// Get rooms by branch (including inactive for admin)
     pub async fn get_rooms(&self, branch_id: &str) -> Result<Vec<Room>, String> {
         let client = self.pool.get().await.map_err(|e| e.to_string())?;
         let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
 
         let rows = client
             .query(
-                "SELECT id, name, kind, branch_id, active
-                 FROM rooms WHERE branch_id = $1 AND active = true",
+                "SELECT id, name, kind::text, branch_id, active
+                 FROM rooms WHERE branch_id = $1 ORDER BY name",
                 &[&branch_uuid],
             )
             .await
@@ -136,6 +283,84 @@ impl PostgresPool {
             .collect();
 
         Ok(rooms)
+    }
+
+    /// Get all rooms (for counting active rooms per branch)
+    pub async fn get_all_rooms(&self) -> Result<Vec<Room>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT id, name, kind, branch_id, active
+                 FROM rooms ORDER BY name",
+                &[],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let rooms = rows
+            .iter()
+            .map(|row| Room {
+                id: row.get::<_, uuid::Uuid>(0).to_string(),
+                name: row.get(1),
+                kind: row.get::<_, String>(2),
+                branch_id: row.get::<_, uuid::Uuid>(3).to_string(),
+                active: row.get(4),
+            })
+            .collect();
+
+        Ok(rooms)
+    }
+
+    /// Create a new room
+    pub async fn create_room(&self, input: &RoomInput) -> Result<Room, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(&input.branch_id).map_err(|e| e.to_string())?;
+
+        let row = client
+            .query_one(
+                "INSERT INTO rooms (name, kind, branch_id, active)
+                 VALUES ($1, $2, $3, true)
+                 RETURNING id, name, kind, branch_id, active",
+                &[&input.name, &input.kind, &branch_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(Room {
+            id: row.get::<_, uuid::Uuid>(0).to_string(),
+            name: row.get(1),
+            kind: row.get::<_, String>(2),
+            branch_id: row.get::<_, uuid::Uuid>(3).to_string(),
+            active: row.get(4),
+        })
+    }
+
+    /// Update an existing room
+    pub async fn update_room(&self, id: &str, update: &RoomUpdate) -> Result<Room, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let room_uuid = uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
+
+        let row = client
+            .query_one(
+                "UPDATE rooms SET
+                    name = COALESCE($2, name),
+                    kind = COALESCE($3, kind),
+                    active = COALESCE($4, active)
+                 WHERE id = $1
+                 RETURNING id, name, kind, branch_id, active",
+                &[&room_uuid, &update.name, &update.kind, &update.active],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(Room {
+            id: row.get::<_, uuid::Uuid>(0).to_string(),
+            name: row.get(1),
+            kind: row.get::<_, String>(2),
+            branch_id: row.get::<_, uuid::Uuid>(3).to_string(),
+            active: row.get(4),
+        })
     }
 
     /// Get patients with optional search
@@ -318,6 +543,31 @@ impl PostgresPool {
         Ok(profiles)
     }
 
+    /// Get profile by user_id
+    pub async fn get_profile_by_user_id(&self, user_id: &str) -> Result<Option<Profile>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let user_uuid = uuid::Uuid::parse_str(user_id).map_err(|e| e.to_string())?;
+
+        let row = client
+            .query_opt(
+                "SELECT id, user_id, full_name, email, specialty, is_visible_in_dashboard
+                 FROM profiles
+                 WHERE user_id = $1",
+                &[&user_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(row.map(|r| Profile {
+            id: r.get::<_, uuid::Uuid>(0).to_string(),
+            user_id: r.get::<_, uuid::Uuid>(1).to_string(),
+            full_name: r.get(2),
+            email: r.get(3),
+            specialty: r.get(4),
+            is_visible_in_dashboard: r.get(5),
+        }))
+    }
+
     /// Get user roles
     pub async fn get_user_roles(&self, user_id: &str) -> Result<Vec<String>, String> {
         let client = self.pool.get().await.map_err(|e| e.to_string())?;
@@ -333,6 +583,170 @@ impl PostgresPool {
 
         let roles: Vec<String> = rows.iter().map(|row| row.get::<_, String>(0)).collect();
         Ok(roles)
+    }
+
+    /// Get all users with their profiles and roles (for Admin panel)
+    pub async fn get_all_users_with_profiles(&self) -> Result<Vec<UserWithProfile>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+
+        // Get all user roles
+        let roles_rows = client
+            .query(
+                "SELECT user_id, role, created_at FROM user_roles ORDER BY created_at",
+                &[],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Collect unique user_ids
+        let user_ids: Vec<uuid::Uuid> = roles_rows
+            .iter()
+            .map(|row| row.get::<_, uuid::Uuid>(0))
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        if user_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Get profiles for all users - build query with placeholders
+        let placeholders: Vec<String> = (1..=user_ids.len()).map(|i| format!("${}", i)).collect();
+        let query = format!(
+            "SELECT user_id, full_name, email, specialty, is_visible_in_dashboard FROM profiles WHERE user_id IN ({})",
+            placeholders.join(", ")
+        );
+
+        // Convert to references for query params
+        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = user_ids
+            .iter()
+            .map(|id| id as &(dyn tokio_postgres::types::ToSql + Sync))
+            .collect();
+
+        let profiles_rows = client
+            .query(&query, &params[..])
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Build map of profiles
+        let mut profiles_map: std::collections::HashMap<String, (String, String, Option<String>, bool)> = std::collections::HashMap::new();
+        for row in profiles_rows {
+            let user_id: uuid::Uuid = row.get(0);
+            let full_name: String = row.get(1);
+            let email: Option<String> = row.get(2);
+            let specialty: Option<String> = row.get(3);
+            let is_visible: bool = row.get::<_, Option<bool>>(4).unwrap_or(true);
+            profiles_map.insert(user_id.to_string(), (full_name, email.unwrap_or_else(|| "N/A".to_string()), specialty, is_visible));
+        }
+
+        // Group roles by user
+        let mut users_map: std::collections::HashMap<String, UserWithProfile> = std::collections::HashMap::new();
+        for row in roles_rows {
+            let user_id: uuid::Uuid = row.get(0);
+            let role: String = row.get(1);
+            let created_at: chrono::DateTime<chrono::Utc> = row.get(2);
+            let user_id_str = user_id.to_string();
+
+            let profile = profiles_map.get(&user_id_str);
+
+            users_map
+                .entry(user_id_str.clone())
+                .and_modify(|u| {
+                    if !u.roles.contains(&role) {
+                        u.roles.push(role.clone());
+                    }
+                })
+                .or_insert_with(|| UserWithProfile {
+                    user_id: user_id_str,
+                    email: profile.map(|p| p.1.clone()).unwrap_or_else(|| "N/A".to_string()),
+                    full_name: profile.map(|p| p.0.clone()).unwrap_or_else(|| "N/A".to_string()),
+                    roles: vec![role],
+                    specialty: profile.and_then(|p| p.2.clone()),
+                    created_at: created_at.to_rfc3339(),
+                    is_visible_in_dashboard: profile.map(|p| p.3).unwrap_or(true),
+                });
+        }
+
+        Ok(users_map.into_values().collect())
+    }
+
+    /// Get pending registrations
+    pub async fn get_pending_registrations(&self) -> Result<Vec<PendingRegistration>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT id, email, full_name, role, specialty, status, created_at
+                 FROM pending_registrations
+                 WHERE status = 'pending'
+                 ORDER BY created_at DESC",
+                &[],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let registrations = rows
+            .iter()
+            .map(|row| PendingRegistration {
+                id: row.get::<_, uuid::Uuid>(0).to_string(),
+                email: row.get(1),
+                full_name: row.get(2),
+                role: row.get(3),
+                specialty: row.get(4),
+                status: row.get(5),
+                created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(6).to_rfc3339(),
+            })
+            .collect();
+
+        Ok(registrations)
+    }
+
+    /// Add a role to a user
+    pub async fn add_user_role(&self, user_id: &str, role: &str) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let user_uuid = uuid::Uuid::parse_str(user_id).map_err(|e| e.to_string())?;
+
+        client
+            .execute(
+                "INSERT INTO user_roles (user_id, role) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                &[&user_uuid, &role],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
+    /// Update user visibility in dashboard
+    pub async fn update_profile_visibility(&self, user_id: &str, is_visible: bool) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let user_uuid = uuid::Uuid::parse_str(user_id).map_err(|e| e.to_string())?;
+
+        client
+            .execute(
+                "UPDATE profiles SET is_visible_in_dashboard = $2 WHERE user_id = $1",
+                &[&user_uuid, &is_visible],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
+    /// Update user specialty and gender (for doctors)
+    pub async fn update_profile_doctor_info(&self, user_id: &str, specialty: Option<String>, gender: Option<String>) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let user_uuid = uuid::Uuid::parse_str(user_id).map_err(|e| e.to_string())?;
+
+        client
+            .execute(
+                "UPDATE profiles SET specialty = $2, gender = $3 WHERE user_id = $1",
+                &[&user_uuid, &specialty, &gender],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
     }
 
     // ============================================================
@@ -615,6 +1029,22 @@ impl PostgresPool {
         self.get_patient_by_id(id)
             .await?
             .ok_or_else(|| "Patient not found after update".to_string())
+    }
+
+    /// Delete a patient (CASCADE will handle related records)
+    pub async fn delete_patient(&self, id: &str) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let patient_uuid = uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
+
+        client
+            .execute(
+                "DELETE FROM patients WHERE id = $1",
+                &[&patient_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
     }
 
     // ============================================================
@@ -1435,6 +1865,34 @@ impl PostgresPool {
         Ok(())
     }
 
+    /// Delete a surgery file
+    pub async fn delete_surgery_file(&self, file_id: &str) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let file_uuid = uuid::Uuid::parse_str(file_id).map_err(|e| e.to_string())?;
+
+        client
+            .execute("DELETE FROM surgery_files WHERE id = $1", &[&file_uuid])
+            .await
+            .map_err(|e| e.to_string())?;
+
+        log::info!("Deleted surgery_file {} from local PostgreSQL", file_id);
+        Ok(())
+    }
+
+    /// Delete a study file
+    pub async fn delete_study_file(&self, file_id: &str) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let file_uuid = uuid::Uuid::parse_str(file_id).map_err(|e| e.to_string())?;
+
+        client
+            .execute("DELETE FROM study_files WHERE id = $1", &[&file_uuid])
+            .await
+            .map_err(|e| e.to_string())?;
+
+        log::info!("Deleted study_file {} from local PostgreSQL", file_id);
+        Ok(())
+    }
+
     /// Helper to map surgery row
     fn map_surgery_row(&self, row: &tokio_postgres::Row, files: Vec<SurgeryFile>) -> Surgery {
         let patient_embed = row.get::<_, Option<uuid::Uuid>>(9).map(|p_id| {
@@ -1853,6 +2311,70 @@ impl PostgresPool {
         Ok(rows.iter().map(|row| self.map_invoice_row(row)).collect())
     }
 
+    /// Get pending invoices by branch (balance_due > 0)
+    pub async fn get_pending_invoices_by_branch(&self, branch_id: &str, date_filter: Option<&str>) -> Result<Vec<Invoice>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+
+        let (query, params): (String, Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>) = match date_filter {
+            Some("today") => {
+                let today = chrono::Utc::now().date_naive();
+                (
+                    "SELECT i.id, i.invoice_number, i.patient_id, i.appointment_id, i.branch_id,
+                            i.total_amount, i.balance_due, i.discount_type, i.discount_value,
+                            i.discount_reason, i.status::text, i.notes, i.created_at,
+                            p.id as p_id, p.first_name, p.last_name, p.code, p.phone
+                     FROM invoices i
+                     LEFT JOIN patients p ON i.patient_id = p.id
+                     WHERE i.branch_id = $1 AND i.status != 'cancelada' AND i.balance_due > 0
+                       AND DATE(i.created_at) = $2
+                     ORDER BY i.created_at DESC
+                     LIMIT 50".to_string(),
+                    vec![Box::new(branch_uuid), Box::new(today)]
+                )
+            }
+            Some("week") => {
+                let week_ago = chrono::Utc::now() - chrono::Duration::days(7);
+                (
+                    "SELECT i.id, i.invoice_number, i.patient_id, i.appointment_id, i.branch_id,
+                            i.total_amount, i.balance_due, i.discount_type, i.discount_value,
+                            i.discount_reason, i.status::text, i.notes, i.created_at,
+                            p.id as p_id, p.first_name, p.last_name, p.code, p.phone
+                     FROM invoices i
+                     LEFT JOIN patients p ON i.patient_id = p.id
+                     WHERE i.branch_id = $1 AND i.status != 'cancelada' AND i.balance_due > 0
+                       AND i.created_at >= $2
+                     ORDER BY i.created_at DESC
+                     LIMIT 50".to_string(),
+                    vec![Box::new(branch_uuid), Box::new(week_ago)]
+                )
+            }
+            _ => {
+                (
+                    "SELECT i.id, i.invoice_number, i.patient_id, i.appointment_id, i.branch_id,
+                            i.total_amount, i.balance_due, i.discount_type, i.discount_value,
+                            i.discount_reason, i.status::text, i.notes, i.created_at,
+                            p.id as p_id, p.first_name, p.last_name, p.code, p.phone
+                     FROM invoices i
+                     LEFT JOIN patients p ON i.patient_id = p.id
+                     WHERE i.branch_id = $1 AND i.status != 'cancelada' AND i.balance_due > 0
+                     ORDER BY i.created_at DESC
+                     LIMIT 50".to_string(),
+                    vec![Box::new(branch_uuid)]
+                )
+            }
+        };
+
+        let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = params.iter().map(|p| p.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+
+        let rows = client
+            .query(&query, &params_refs)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| self.map_invoice_row(row)).collect())
+    }
+
     /// Get invoice by ID
     pub async fn get_invoice_by_id(&self, id: &str) -> Result<Option<Invoice>, String> {
         let client = self.pool.get().await.map_err(|e| e.to_string())?;
@@ -1868,6 +2390,28 @@ impl PostgresPool {
                  LEFT JOIN patients p ON i.patient_id = p.id
                  WHERE i.id = $1",
                 &[&invoice_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(result.map(|row| self.map_invoice_row(&row)))
+    }
+
+    /// Get invoice by appointment ID
+    pub async fn get_invoice_by_appointment(&self, appointment_id: &str) -> Result<Option<Invoice>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let appointment_uuid = uuid::Uuid::parse_str(appointment_id).map_err(|e| e.to_string())?;
+
+        let result = client
+            .query_opt(
+                "SELECT i.id, i.invoice_number, i.patient_id, i.appointment_id, i.branch_id,
+                        i.total_amount, i.balance_due, i.discount_type, i.discount_value,
+                        i.discount_reason, i.status::text, i.notes, i.created_at,
+                        p.id as p_id, p.first_name, p.last_name, p.code, p.phone
+                 FROM invoices i
+                 LEFT JOIN patients p ON i.patient_id = p.id
+                 WHERE i.appointment_id = $1",
+                &[&appointment_uuid],
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -1986,7 +2530,7 @@ impl PostgresPool {
     }
 
     /// Generate invoice number
-    async fn generate_invoice_number(&self, branch_id: &str) -> Result<String, String> {
+    pub async fn generate_invoice_number(&self, branch_id: &str) -> Result<String, String> {
         let client = self.pool.get().await.map_err(|e| e.to_string())?;
         let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
 
@@ -2544,6 +3088,622 @@ impl PostgresPool {
         }).collect())
     }
 
+    /// Create a supplier
+    pub async fn create_supplier(&self, input: &crate::commands::SupplierInput) -> Result<Supplier, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+
+        let row = client
+            .query_one(
+                "INSERT INTO suppliers (name, active) VALUES ($1, true) RETURNING id, name, contact, phone",
+                &[&input.name],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(Supplier {
+            id: row.get::<_, uuid::Uuid>(0).to_string(),
+            name: row.get(1),
+            contact: row.get(2),
+            phone: row.get(3),
+        })
+    }
+
+    // ============================================================
+    // INVENTORY LOTS
+    // ============================================================
+
+    /// Get inventory lots by item_id
+    pub async fn get_inventory_lots(&self, item_id: &str) -> Result<Vec<crate::commands::InventoryLot>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let item_uuid = uuid::Uuid::parse_str(item_id).map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT id, item_id, lot_number, expiration_date, quantity, created_at
+                 FROM inventory_lots
+                 WHERE item_id = $1
+                 ORDER BY created_at DESC",
+                &[&item_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| {
+            let exp_date: Option<chrono::NaiveDate> = row.get(3);
+            crate::commands::InventoryLot {
+                id: row.get::<_, uuid::Uuid>(0).to_string(),
+                item_id: row.get::<_, uuid::Uuid>(1).to_string(),
+                lot_number: row.get(2),
+                expiration_date: exp_date.map(|d| d.to_string()),
+                quantity: row.get::<_, f64>(4),
+                created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(5).to_rfc3339(),
+            }
+        }).collect())
+    }
+
+    /// Get all inventory lots with product info for a branch
+    pub async fn get_all_inventory_lots(&self, branch_id: &str) -> Result<Vec<crate::commands::InventoryLotWithProduct>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT l.id, l.item_id, l.lot_number, l.expiry_date, l.quantity, l.cost_price, l.created_at,
+                        i.name as item_name, i.code as item_code
+                 FROM inventory_lots l
+                 JOIN inventory_items i ON l.item_id = i.id
+                 WHERE i.branch_id = $1
+                 ORDER BY l.expiry_date ASC NULLS LAST",
+                &[&branch_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| {
+            let exp_date: Option<chrono::NaiveDate> = row.get(3);
+            let cost: Option<f64> = row.get(5);
+            let item_name: Option<String> = row.get(7);
+            let item_code: Option<String> = row.get(8);
+
+            crate::commands::InventoryLotWithProduct {
+                id: row.get::<_, uuid::Uuid>(0).to_string(),
+                item_id: row.get::<_, uuid::Uuid>(1).to_string(),
+                lot_number: row.get(2),
+                expiry_date: exp_date.map(|d| d.to_string()),
+                quantity: row.get::<_, f64>(4),
+                cost_price: cost,
+                created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(6).to_rfc3339(),
+                inventory_items: item_name.map(|name| crate::commands::InventoryItemEmbed {
+                    name,
+                    code: item_code,
+                }),
+            }
+        }).collect())
+    }
+
+    /// Create an inventory lot
+    pub async fn create_inventory_lot(&self, input: &crate::commands::InventoryLotInput) -> Result<crate::commands::InventoryLot, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let item_uuid = uuid::Uuid::parse_str(&input.item_id).map_err(|e| e.to_string())?;
+        let expiry = input.expiry_date.as_ref()
+            .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+
+        let row = client
+            .query_one(
+                "INSERT INTO inventory_lots (item_id, lot_number, quantity, expiry_date, cost_price)
+                 VALUES ($1, $2, $3, $4, $5)
+                 RETURNING id, item_id, lot_number, expiry_date, quantity, created_at",
+                &[&item_uuid, &input.lot_number, &input.quantity, &expiry, &input.cost_price],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let exp_date: Option<chrono::NaiveDate> = row.get(3);
+
+        Ok(crate::commands::InventoryLot {
+            id: row.get::<_, uuid::Uuid>(0).to_string(),
+            item_id: row.get::<_, uuid::Uuid>(1).to_string(),
+            lot_number: row.get(2),
+            expiration_date: exp_date.map(|d| d.to_string()),
+            quantity: row.get::<_, f64>(4),
+            created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(5).to_rfc3339(),
+        })
+    }
+
+    // ============================================================
+    // INVENTORY MOVEMENTS
+    // ============================================================
+
+    /// Get inventory movements with joins
+    pub async fn get_inventory_movements(&self, branch_id: &str, limit: i32) -> Result<Vec<crate::commands::InventoryMovement>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT m.id, m.branch_id, m.item_id, m.lot_id, m.movement_type::text, m.quantity,
+                        m.reference_type, m.reference_id, m.notes, m.created_at,
+                        i.name as item_name, i.code as item_code,
+                        l.lot_number
+                 FROM inventory_movements m
+                 LEFT JOIN inventory_items i ON m.item_id = i.id
+                 LEFT JOIN inventory_lots l ON m.lot_id = l.id
+                 WHERE m.branch_id = $1
+                 ORDER BY m.created_at DESC
+                 LIMIT $2",
+                &[&branch_uuid, &(limit as i64)],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| {
+            let lot_id: Option<uuid::Uuid> = row.get(3);
+            let ref_id: Option<uuid::Uuid> = row.get(7);
+            let item_name: Option<String> = row.get(10);
+            let item_code: Option<String> = row.get(11);
+            let lot_number: Option<String> = row.get(12);
+
+            crate::commands::InventoryMovement {
+                id: row.get::<_, uuid::Uuid>(0).to_string(),
+                branch_id: row.get::<_, uuid::Uuid>(1).to_string(),
+                item_id: row.get::<_, uuid::Uuid>(2).to_string(),
+                lot_id: lot_id.map(|u| u.to_string()),
+                movement_type: row.get(4),
+                quantity: row.get::<_, f64>(5),
+                reference_type: row.get(6),
+                reference_id: ref_id.map(|u| u.to_string()),
+                notes: row.get(8),
+                created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(9).to_rfc3339(),
+                inventory_items: item_name.map(|name| crate::commands::InventoryItemEmbed {
+                    name,
+                    code: item_code,
+                }),
+                inventory_lots: lot_number.map(|ln| crate::commands::InventoryLotEmbed {
+                    lot_number: ln,
+                }),
+            }
+        }).collect())
+    }
+
+    /// Create inventory movement (trigger will update stock)
+    pub async fn create_inventory_movement(&self, input: &crate::commands::InventoryMovementInput) -> Result<crate::commands::InventoryMovement, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(&input.branch_id).map_err(|e| e.to_string())?;
+        let item_uuid = uuid::Uuid::parse_str(&input.item_id).map_err(|e| e.to_string())?;
+        let lot_uuid = match &input.lot_id {
+            Some(id) if !id.is_empty() => Some(uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?),
+            _ => None,
+        };
+
+        let row = client
+            .query_one(
+                "INSERT INTO inventory_movements (branch_id, item_id, lot_id, movement_type, quantity, reference_type, notes)
+                 VALUES ($1, $2, $3, $4::inventory_movement_type, $5, $6, $7)
+                 RETURNING id, branch_id, item_id, lot_id, movement_type::text, quantity, reference_type, reference_id, notes, created_at",
+                &[&branch_uuid, &item_uuid, &lot_uuid, &input.movement_type, &input.quantity, &input.reference_type, &input.notes],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let lot_id: Option<uuid::Uuid> = row.get(3);
+        let ref_id: Option<uuid::Uuid> = row.get(7);
+
+        Ok(crate::commands::InventoryMovement {
+            id: row.get::<_, uuid::Uuid>(0).to_string(),
+            branch_id: row.get::<_, uuid::Uuid>(1).to_string(),
+            item_id: row.get::<_, uuid::Uuid>(2).to_string(),
+            lot_id: lot_id.map(|u| u.to_string()),
+            movement_type: row.get(4),
+            quantity: row.get::<_, f64>(5),
+            reference_type: row.get(6),
+            reference_id: ref_id.map(|u| u.to_string()),
+            notes: row.get(8),
+            created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(9).to_rfc3339(),
+            inventory_items: None,
+            inventory_lots: None,
+        })
+    }
+
+    // ============================================================
+    // CASH CLOSURE REPORTS
+    // ============================================================
+
+    /// Get service sales summary by type
+    pub async fn get_service_sales(&self, branch_id: &str, start_date: &str, end_date: &str) -> Result<Vec<crate::commands::ServiceSales>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT sp.service_type, COUNT(*)::bigint as cantidad, COALESCE(SUM(ii.subtotal), 0)::float8 as total
+                 FROM invoice_items ii
+                 JOIN invoices i ON ii.invoice_id = i.id
+                 JOIN service_prices sp ON ii.item_id = sp.id
+                 WHERE ii.item_type = 'servicio'
+                   AND i.branch_id = $1
+                   AND i.created_at >= $2::timestamptz
+                   AND i.created_at <= $3::timestamptz
+                   AND i.status != 'cancelada'
+                 GROUP BY sp.service_type
+                 ORDER BY total DESC",
+                &[&branch_uuid, &start_date, &end_date],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::ServiceSales {
+            service_type: row.get(0),
+            cantidad: row.get(1),
+            total: row.get(2),
+        }).collect())
+    }
+
+    /// Get detailed service sales
+    pub async fn get_service_details(&self, branch_id: &str, start_date: &str, end_date: &str) -> Result<Vec<crate::commands::ServiceDetail>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT sp.service_name, sp.service_type, SUM(ii.quantity)::bigint as cantidad, COALESCE(SUM(ii.subtotal), 0)::float8 as total
+                 FROM invoice_items ii
+                 JOIN invoices i ON ii.invoice_id = i.id
+                 JOIN service_prices sp ON ii.item_id = sp.id
+                 WHERE ii.item_type = 'servicio'
+                   AND i.branch_id = $1
+                   AND i.created_at >= $2::timestamptz
+                   AND i.created_at <= $3::timestamptz
+                   AND i.status != 'cancelada'
+                 GROUP BY sp.service_name, sp.service_type
+                 ORDER BY total DESC",
+                &[&branch_uuid, &start_date, &end_date],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::ServiceDetail {
+            service_name: row.get(0),
+            service_type: row.get(1),
+            cantidad: row.get(2),
+            total: row.get(3),
+        }).collect())
+    }
+
+    /// Get inventory sales summary by category
+    pub async fn get_inventory_sales(&self, branch_id: &str, start_date: &str, end_date: &str) -> Result<Vec<crate::commands::InventorySales>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT COALESCE(inv.category, 'Sin categoría') as category, SUM(ii.quantity)::bigint as cantidad, COALESCE(SUM(ii.subtotal), 0)::float8 as total
+                 FROM invoice_items ii
+                 JOIN invoices i ON ii.invoice_id = i.id
+                 LEFT JOIN inventory_items inv ON ii.item_id = inv.id
+                 WHERE ii.item_type = 'producto'
+                   AND i.branch_id = $1
+                   AND i.created_at >= $2::timestamptz
+                   AND i.created_at <= $3::timestamptz
+                   AND i.status != 'cancelada'
+                 GROUP BY inv.category
+                 ORDER BY total DESC",
+                &[&branch_uuid, &start_date, &end_date],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::InventorySales {
+            category: row.get(0),
+            cantidad: row.get(1),
+            total: row.get(2),
+        }).collect())
+    }
+
+    /// Get detailed inventory sales
+    pub async fn get_inventory_details(&self, branch_id: &str, start_date: &str, end_date: &str) -> Result<Vec<crate::commands::InventoryDetail>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT COALESCE(inv.category, 'Sin categoría') as category, COALESCE(inv.name, ii.description) as product_name,
+                        SUM(ii.quantity)::bigint as cantidad, COALESCE(SUM(ii.subtotal), 0)::float8 as total
+                 FROM invoice_items ii
+                 JOIN invoices i ON ii.invoice_id = i.id
+                 LEFT JOIN inventory_items inv ON ii.item_id = inv.id
+                 WHERE ii.item_type = 'producto'
+                   AND i.branch_id = $1
+                   AND i.created_at >= $2::timestamptz
+                   AND i.created_at <= $3::timestamptz
+                   AND i.status != 'cancelada'
+                 GROUP BY inv.category, COALESCE(inv.name, ii.description)
+                 ORDER BY total DESC",
+                &[&branch_uuid, &start_date, &end_date],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::InventoryDetail {
+            category: row.get(0),
+            product_name: row.get(1),
+            cantidad: row.get(2),
+            total: row.get(3),
+        }).collect())
+    }
+
+    /// Get payment method summary
+    pub async fn get_payment_method_summary(&self, branch_id: &str, start_date: &str, end_date: &str) -> Result<Vec<crate::commands::PaymentMethodSummary>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT p.payment_method, COUNT(*)::bigint as cantidad, COALESCE(SUM(p.amount), 0)::float8 as total
+                 FROM payments p
+                 JOIN invoices i ON p.invoice_id = i.id
+                 WHERE i.branch_id = $1
+                   AND p.created_at >= $2::timestamptz
+                   AND p.created_at <= $3::timestamptz
+                   AND p.status = 'completado'
+                 GROUP BY p.payment_method
+                 ORDER BY total DESC",
+                &[&branch_uuid, &start_date, &end_date],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::PaymentMethodSummary {
+            payment_method: row.get(0),
+            cantidad: row.get(1),
+            total: row.get(2),
+        }).collect())
+    }
+
+    /// Get products report with detailed sales data
+    pub async fn get_products_report(&self, branch_id: &str, start_date: &str, end_date: &str) -> Result<Vec<crate::commands::ProductReportItem>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT
+                    inv.invoice_number,
+                    inv.created_at,
+                    COALESCE(p.first_name || ' ' || p.last_name, 'Sin paciente') as patient_name,
+                    COALESCE(ii.name, it.description, 'Producto eliminado') as product_name,
+                    COALESCE(ii.category, 'N/A') as category,
+                    COALESCE(s.name, 'Sin proveedor') as supplier_name,
+                    it.quantity::float8,
+                    it.unit_price::float8,
+                    COALESCE(ii.cost_price, 0)::float8 as cost_price,
+                    it.subtotal::float8,
+                    (it.subtotal - COALESCE(ii.cost_price, 0) * it.quantity)::float8 as profit
+                 FROM invoice_items it
+                 JOIN invoices inv ON it.invoice_id = inv.id
+                 LEFT JOIN patients p ON inv.patient_id = p.id
+                 LEFT JOIN inventory_items ii ON it.item_id = ii.id
+                 LEFT JOIN suppliers s ON ii.supplier_id = s.id
+                 WHERE inv.branch_id = $1
+                   AND it.item_type = 'producto'
+                   AND inv.created_at >= $2::timestamptz
+                   AND inv.created_at <= $3::timestamptz
+                   AND inv.status != 'cancelada'
+                 ORDER BY inv.created_at DESC",
+                &[&branch_uuid, &start_date, &end_date],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::ProductReportItem {
+            invoice_number: row.get(0),
+            created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(1).to_rfc3339(),
+            patient_name: row.get(2),
+            product_name: row.get(3),
+            category: row.get(4),
+            supplier_name: row.get(5),
+            quantity: row.get(6),
+            unit_price: row.get(7),
+            cost_price: row.get(8),
+            subtotal: row.get(9),
+            profit: row.get(10),
+        }).collect())
+    }
+
+    /// Get services report with detailed sales data
+    pub async fn get_services_report(&self, branch_id: &str, start_date: &str, end_date: &str) -> Result<Vec<crate::commands::ServiceReportItem>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT
+                    inv.invoice_number,
+                    inv.created_at,
+                    COALESCE(p.first_name || ' ' || p.last_name, 'Sin paciente') as patient_name,
+                    COALESCE(sp.service_name, it.description, 'Servicio') as service_name,
+                    COALESCE(sp.service_type, 'N/A') as service_type,
+                    it.quantity::float8,
+                    it.unit_price::float8,
+                    it.subtotal::float8,
+                    inv.discount_type,
+                    COALESCE(inv.discount_value, 0)::float8 as discount_value,
+                    inv.discount_reason
+                 FROM invoice_items it
+                 JOIN invoices inv ON it.invoice_id = inv.id
+                 LEFT JOIN patients p ON inv.patient_id = p.id
+                 LEFT JOIN service_prices sp ON it.item_id = sp.id
+                 WHERE inv.branch_id = $1
+                   AND it.item_type = 'servicio'
+                   AND inv.created_at >= $2::timestamptz
+                   AND inv.created_at <= $3::timestamptz
+                   AND inv.status != 'cancelada'
+                 ORDER BY inv.created_at DESC",
+                &[&branch_uuid, &start_date, &end_date],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::ServiceReportItem {
+            invoice_number: row.get(0),
+            created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(1).to_rfc3339(),
+            patient_name: row.get(2),
+            service_name: row.get(3),
+            service_type: row.get(4),
+            quantity: row.get(5),
+            unit_price: row.get(6),
+            subtotal: row.get(7),
+            discount_type: row.get(8),
+            discount_value: row.get(9),
+            discount_reason: row.get(10),
+        }).collect())
+    }
+
+    // ============================================================
+    // CASH CLOSURE
+    // ============================================================
+
+    /// Get daily summary for cash closure
+    pub async fn get_daily_summary(&self, branch_id: &str, start_date: &str, end_date: &str) -> Result<crate::commands::DailySummary, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+
+        // Get invoices totals
+        let invoice_row = client
+            .query_one(
+                "SELECT
+                    COALESCE(SUM(total_amount), 0)::float8 as total_invoiced,
+                    COALESCE(SUM(balance_due), 0)::float8 as total_pending,
+                    COALESCE(SUM(discount_value), 0)::float8 as total_discounts
+                 FROM invoices
+                 WHERE branch_id = $1
+                   AND created_at >= $2::timestamptz
+                   AND created_at <= $3::timestamptz
+                   AND status != 'cancelada'",
+                &[&branch_uuid, &start_date, &end_date],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Get payments total
+        let payment_row = client
+            .query_one(
+                "SELECT COALESCE(SUM(p.amount), 0)::float8 as total_collected
+                 FROM payments p
+                 JOIN invoices inv ON p.invoice_id = inv.id
+                 WHERE inv.branch_id = $1
+                   AND p.created_at >= $2::timestamptz
+                   AND p.created_at <= $3::timestamptz
+                   AND p.status = 'completado'",
+                &[&branch_uuid, &start_date, &end_date],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(crate::commands::DailySummary {
+            total_invoiced: invoice_row.get(0),
+            total_collected: payment_row.get(0),
+            total_pending: invoice_row.get(1),
+            total_discounts: invoice_row.get(2),
+        })
+    }
+
+    /// Get daily invoices for cash closure
+    pub async fn get_daily_invoices(&self, branch_id: &str, start_date: &str, end_date: &str) -> Result<Vec<crate::commands::DailyInvoice>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT
+                    inv.invoice_number,
+                    COALESCE(p.first_name || ' ' || p.last_name, 'Sin paciente') as patient_name,
+                    inv.total_amount::float8,
+                    inv.status::text,
+                    (SELECT payment_method::text FROM payments WHERE invoice_id = inv.id ORDER BY created_at DESC LIMIT 1)
+                 FROM invoices inv
+                 LEFT JOIN patients p ON inv.patient_id = p.id
+                 WHERE inv.branch_id = $1
+                   AND inv.created_at >= $2::timestamptz
+                   AND inv.created_at <= $3::timestamptz
+                 ORDER BY inv.created_at DESC",
+                &[&branch_uuid, &start_date, &end_date],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::DailyInvoice {
+            invoice_number: row.get(0),
+            patient_name: row.get(1),
+            total_amount: row.get(2),
+            status: row.get(3),
+            payment_method: row.get(4),
+        }).collect())
+    }
+
+    /// Create cash closure
+    pub async fn create_cash_closure(&self, closure: crate::commands::CashClosureInput) -> Result<serde_json::Value, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(&closure.branch_id).map_err(|e| e.to_string())?;
+        let closed_by_uuid = uuid::Uuid::parse_str(&closure.closed_by).map_err(|e| e.to_string())?;
+
+        let row = client
+            .query_one(
+                "INSERT INTO cash_closures (
+                    branch_id, period_start, period_end,
+                    total_invoiced, total_collected, total_pending, total_discounts,
+                    consultas_total, consultas_count,
+                    cirugias_total, cirugias_count,
+                    procedimientos_total, procedimientos_count,
+                    estudios_total, estudios_count,
+                    inventory_total, inventory_count,
+                    efectivo_total, tarjeta_total, transferencia_total, cheque_total, otro_total,
+                    detailed_data, closed_by
+                ) VALUES (
+                    $1, $2::timestamptz, $3::timestamptz,
+                    $4, $5, $6, $7,
+                    $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+                    $18, $19, $20, $21, $22,
+                    $23, $24
+                ) RETURNING id, created_at",
+                &[
+                    &branch_uuid,
+                    &closure.period_start,
+                    &closure.period_end,
+                    &closure.total_invoiced,
+                    &closure.total_collected,
+                    &closure.total_pending,
+                    &closure.total_discounts,
+                    &closure.consultas_total,
+                    &closure.consultas_count,
+                    &closure.cirugias_total,
+                    &closure.cirugias_count,
+                    &closure.procedimientos_total,
+                    &closure.procedimientos_count,
+                    &closure.estudios_total,
+                    &closure.estudios_count,
+                    &closure.inventory_total,
+                    &closure.inventory_count,
+                    &closure.efectivo_total,
+                    &closure.tarjeta_total,
+                    &closure.transferencia_total,
+                    &closure.cheque_total,
+                    &closure.otro_total,
+                    &closure.detailed_data,
+                    &closed_by_uuid,
+                ],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let id: uuid::Uuid = row.get(0);
+        let created_at: chrono::DateTime<chrono::Utc> = row.get(1);
+
+        Ok(serde_json::json!({
+            "id": id.to_string(),
+            "created_at": created_at.to_rfc3339()
+        }))
+    }
+
     // ============================================================
     // CRM PIPELINES
     // ============================================================
@@ -2939,7 +4099,10 @@ impl PostgresPool {
 
         let rows = client
             .query(
-                "SELECT id, name, description FROM surgery_types WHERE deleted_at IS NULL ORDER BY name",
+                "SELECT id, name, category, display_order, active
+                 FROM surgery_types
+                 WHERE deleted_at IS NULL
+                 ORDER BY category, display_order",
                 &[],
             )
             .await
@@ -2948,7 +4111,9 @@ impl PostgresPool {
         Ok(rows.iter().map(|row| SurgeryType {
             id: row.get::<_, uuid::Uuid>(0).to_string(),
             name: row.get(1),
-            description: row.get(2),
+            category: row.get(2),
+            display_order: row.get::<_, Option<i32>>(3).unwrap_or(0),
+            active: row.get::<_, Option<bool>>(4).unwrap_or(true),
         }).collect())
     }
 
@@ -2958,7 +4123,10 @@ impl PostgresPool {
 
         let rows = client
             .query(
-                "SELECT id, name, description FROM study_types WHERE deleted_at IS NULL ORDER BY name",
+                "SELECT id, name, display_order, active
+                 FROM study_types
+                 WHERE deleted_at IS NULL
+                 ORDER BY display_order",
                 &[],
             )
             .await
@@ -2967,7 +4135,8 @@ impl PostgresPool {
         Ok(rows.iter().map(|row| StudyType {
             id: row.get::<_, uuid::Uuid>(0).to_string(),
             name: row.get(1),
-            description: row.get(2),
+            display_order: row.get::<_, Option<i32>>(2).unwrap_or(0),
+            active: row.get::<_, Option<bool>>(3).unwrap_or(true),
         }).collect())
     }
 
@@ -2977,7 +4146,10 @@ impl PostgresPool {
 
         let rows = client
             .query(
-                "SELECT id, name, description FROM procedure_types WHERE deleted_at IS NULL ORDER BY name",
+                "SELECT id, name, display_order, active
+                 FROM procedure_types
+                 WHERE deleted_at IS NULL
+                 ORDER BY display_order",
                 &[],
             )
             .await
@@ -2986,8 +4158,226 @@ impl PostgresPool {
         Ok(rows.iter().map(|row| ProcedureTypeConfig {
             id: row.get::<_, uuid::Uuid>(0).to_string(),
             name: row.get(1),
-            description: row.get(2),
+            display_order: row.get::<_, Option<i32>>(2).unwrap_or(0),
+            active: row.get::<_, Option<bool>>(3).unwrap_or(true),
         }).collect())
+    }
+
+    /// Create surgery type
+    pub async fn create_surgery_type(&self, input: &SurgeryTypeInput) -> Result<SurgeryType, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+
+        let row = client
+            .query_one(
+                "INSERT INTO surgery_types (name, category, display_order)
+                 VALUES ($1, $2, COALESCE($3, 0))
+                 RETURNING id, name, category, display_order, active",
+                &[&input.name, &input.category, &input.display_order],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(SurgeryType {
+            id: row.get::<_, uuid::Uuid>(0).to_string(),
+            name: row.get(1),
+            category: row.get(2),
+            display_order: row.get::<_, Option<i32>>(3).unwrap_or(0),
+            active: row.get::<_, Option<bool>>(4).unwrap_or(true),
+        })
+    }
+
+    /// Create study type
+    pub async fn create_study_type(&self, input: &StudyTypeInput) -> Result<StudyType, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+
+        let row = client
+            .query_one(
+                "INSERT INTO study_types (name, display_order)
+                 VALUES ($1, COALESCE($2, 0))
+                 RETURNING id, name, display_order, active",
+                &[&input.name, &input.display_order],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(StudyType {
+            id: row.get::<_, uuid::Uuid>(0).to_string(),
+            name: row.get(1),
+            display_order: row.get::<_, Option<i32>>(2).unwrap_or(0),
+            active: row.get::<_, Option<bool>>(3).unwrap_or(true),
+        })
+    }
+
+    /// Create procedure type
+    pub async fn create_procedure_type(&self, input: &ProcedureTypeInput) -> Result<ProcedureTypeConfig, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+
+        let row = client
+            .query_one(
+                "INSERT INTO procedure_types (name, display_order)
+                 VALUES ($1, COALESCE($2, 0))
+                 RETURNING id, name, display_order, active",
+                &[&input.name, &input.display_order],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(ProcedureTypeConfig {
+            id: row.get::<_, uuid::Uuid>(0).to_string(),
+            name: row.get(1),
+            display_order: row.get::<_, Option<i32>>(2).unwrap_or(0),
+            active: row.get::<_, Option<bool>>(3).unwrap_or(true),
+        })
+    }
+
+    /// Update surgery type
+    pub async fn update_surgery_type(&self, id: &str, updates: &ClinicalTypeUpdate) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let uuid = uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
+
+        let mut query_parts = Vec::new();
+        let mut param_idx = 1;
+
+        if updates.name.is_some() {
+            param_idx += 1;
+            query_parts.push(format!("name = ${}", param_idx));
+        }
+        if updates.active.is_some() {
+            param_idx += 1;
+            query_parts.push(format!("active = ${}", param_idx));
+        }
+
+        if query_parts.is_empty() {
+            return Ok(());
+        }
+
+        let query = format!(
+            "UPDATE surgery_types SET {} WHERE id = $1",
+            query_parts.join(", ")
+        );
+
+        let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![&uuid];
+        if let Some(ref name) = updates.name {
+            params.push(name);
+        }
+        if let Some(ref active) = updates.active {
+            params.push(active);
+        }
+
+        client.execute(&query, &params[..]).await.map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Update study type
+    pub async fn update_study_type(&self, id: &str, updates: &ClinicalTypeUpdate) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let uuid = uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
+
+        let mut query_parts = Vec::new();
+        let mut param_idx = 1;
+
+        if updates.name.is_some() {
+            param_idx += 1;
+            query_parts.push(format!("name = ${}", param_idx));
+        }
+        if updates.active.is_some() {
+            param_idx += 1;
+            query_parts.push(format!("active = ${}", param_idx));
+        }
+
+        if query_parts.is_empty() {
+            return Ok(());
+        }
+
+        let query = format!(
+            "UPDATE study_types SET {} WHERE id = $1",
+            query_parts.join(", ")
+        );
+
+        let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![&uuid];
+        if let Some(ref name) = updates.name {
+            params.push(name);
+        }
+        if let Some(ref active) = updates.active {
+            params.push(active);
+        }
+
+        client.execute(&query, &params[..]).await.map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Update procedure type
+    pub async fn update_procedure_type(&self, id: &str, updates: &ClinicalTypeUpdate) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let uuid = uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
+
+        let mut query_parts = Vec::new();
+        let mut param_idx = 1;
+
+        if updates.name.is_some() {
+            param_idx += 1;
+            query_parts.push(format!("name = ${}", param_idx));
+        }
+        if updates.active.is_some() {
+            param_idx += 1;
+            query_parts.push(format!("active = ${}", param_idx));
+        }
+
+        if query_parts.is_empty() {
+            return Ok(());
+        }
+
+        let query = format!(
+            "UPDATE procedure_types SET {} WHERE id = $1",
+            query_parts.join(", ")
+        );
+
+        let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![&uuid];
+        if let Some(ref name) = updates.name {
+            params.push(name);
+        }
+        if let Some(ref active) = updates.active {
+            params.push(active);
+        }
+
+        client.execute(&query, &params[..]).await.map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Delete surgery type (hard delete)
+    pub async fn delete_surgery_type(&self, id: &str) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let uuid = uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
+
+        client
+            .execute("DELETE FROM surgery_types WHERE id = $1", &[&uuid])
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Delete study type (hard delete)
+    pub async fn delete_study_type(&self, id: &str) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let uuid = uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
+
+        client
+            .execute("DELETE FROM study_types WHERE id = $1", &[&uuid])
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Delete procedure type (hard delete)
+    pub async fn delete_procedure_type(&self, id: &str) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let uuid = uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
+
+        client
+            .execute("DELETE FROM procedure_types WHERE id = $1", &[&uuid])
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     // ============================================================
@@ -3158,5 +4548,1553 @@ impl PostgresPool {
             .collect();
 
         Ok(details)
+    }
+
+    // ============================================================
+    // CRM ACTIVITY LOG
+    // ============================================================
+
+    /// Get last read timestamp for CRM activities by user
+    pub async fn get_crm_activity_read(&self, user_id: &str) -> Result<Option<String>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let user_uuid = uuid::Uuid::parse_str(user_id).map_err(|e| e.to_string())?;
+
+        let result = client
+            .query_opt(
+                "SELECT last_read_at::text FROM crm_activity_read WHERE user_id = $1",
+                &[&user_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(result.map(|row| row.get(0)))
+    }
+
+    /// Upsert CRM activity read timestamp
+    pub async fn upsert_crm_activity_read(&self, user_id: &str) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let user_uuid = uuid::Uuid::parse_str(user_id).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now();
+
+        client
+            .execute(
+                "INSERT INTO crm_activity_read (user_id, last_read_at)
+                 VALUES ($1, $2)
+                 ON CONFLICT (user_id)
+                 DO UPDATE SET last_read_at = $2",
+                &[&user_uuid, &now],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
+    /// Get unread CRM activities count with procedure info
+    pub async fn get_crm_unread_activities(&self, branch_id: &str, last_read: Option<&str>) -> Result<Vec<CRMUnreadActivity>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+
+        let rows = if let Some(last_read_at) = last_read {
+            let last_read_time = chrono::DateTime::parse_from_rfc3339(last_read_at)
+                .map_err(|e| e.to_string())?
+                .with_timezone(&chrono::Utc);
+
+            client
+                .query(
+                    "SELECT al.id, pt.name as procedure_name
+                     FROM crm_activity_log al
+                     LEFT JOIN crm_pipelines p ON al.pipeline_id = p.id
+                     LEFT JOIN crm_procedure_types pt ON p.procedure_type_id = pt.id
+                     WHERE al.branch_id = $1 AND al.created_at > $2",
+                    &[&branch_uuid, &last_read_time],
+                )
+                .await
+                .map_err(|e| e.to_string())?
+        } else {
+            client
+                .query(
+                    "SELECT al.id, pt.name as procedure_name
+                     FROM crm_activity_log al
+                     LEFT JOIN crm_pipelines p ON al.pipeline_id = p.id
+                     LEFT JOIN crm_procedure_types pt ON p.procedure_type_id = pt.id
+                     WHERE al.branch_id = $1",
+                    &[&branch_uuid],
+                )
+                .await
+                .map_err(|e| e.to_string())?
+        };
+
+        Ok(rows.iter().map(|row| CRMUnreadActivity {
+            id: row.get::<_, uuid::Uuid>(0).to_string(),
+            procedure_name: row.get(1),
+        }).collect())
+    }
+
+    /// Get recent CRM activities (last 48 hours)
+    pub async fn get_crm_recent_activities(&self, branch_id: &str) -> Result<Vec<CRMActivityLog>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+        let two_days_ago = chrono::Utc::now() - chrono::Duration::hours(48);
+
+        let rows = client
+            .query(
+                "SELECT al.id, al.pipeline_id, al.activity_type::text, al.from_stage, al.to_stage,
+                        al.reason, al.created_by, al.branch_id, al.created_at,
+                        p.eye_side,
+                        pat.first_name as patient_first_name, pat.last_name as patient_last_name,
+                        pt.name as procedure_name, pt.color as procedure_color,
+                        pr.full_name as creator_name
+                 FROM crm_activity_log al
+                 LEFT JOIN crm_pipelines p ON al.pipeline_id = p.id
+                 LEFT JOIN patients pat ON p.patient_id = pat.id
+                 LEFT JOIN crm_procedure_types pt ON p.procedure_type_id = pt.id
+                 LEFT JOIN profiles pr ON al.created_by = pr.user_id
+                 WHERE al.branch_id = $1 AND al.created_at >= $2
+                 ORDER BY al.created_at DESC
+                 LIMIT 50",
+                &[&branch_uuid, &two_days_ago],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| {
+            let patient = if row.get::<_, Option<String>>(10).is_some() {
+                Some(CRMActivityPatient {
+                    first_name: row.get(10),
+                    last_name: row.get(11),
+                })
+            } else {
+                None
+            };
+
+            let procedure_type = if row.get::<_, Option<String>>(12).is_some() {
+                Some(CRMActivityProcedureType {
+                    name: row.get(12),
+                    color: row.get(13),
+                })
+            } else {
+                None
+            };
+
+            let creator = row.get::<_, Option<String>>(14).map(|name| CRMActivityCreator {
+                full_name: name,
+            });
+
+            CRMActivityLog {
+                id: row.get::<_, uuid::Uuid>(0).to_string(),
+                pipeline_id: row.get::<_, uuid::Uuid>(1).to_string(),
+                activity_type: row.get(2),
+                from_stage: row.get(3),
+                to_stage: row.get(4),
+                reason: row.get(5),
+                created_by: row.get::<_, Option<uuid::Uuid>>(6).map(|u| u.to_string()),
+                branch_id: row.get::<_, uuid::Uuid>(7).to_string(),
+                created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(8).to_rfc3339(),
+                eye_side: row.get(9),
+                patient,
+                procedure_type,
+                creator,
+            }
+        }).collect())
+    }
+
+    // ============================================================
+    // APP SETTINGS
+    // ============================================================
+
+    /// Get all app settings
+    pub async fn get_app_settings(&self) -> Result<Vec<AppSetting>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT id, key, value, description FROM app_settings ORDER BY key",
+                &[],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| {
+            AppSetting {
+                id: row.get::<_, uuid::Uuid>(0).to_string(),
+                key: row.get(1),
+                value: row.get(2),  // JSONB se convierte directamente a serde_json::Value
+                description: row.get(3),
+            }
+        }).collect())
+    }
+
+    /// Update an app setting by key
+    pub async fn update_app_setting(&self, key: &str, value: &serde_json::Value) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let value_str = serde_json::to_string(value).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now();
+
+        client
+            .execute(
+                "UPDATE app_settings SET value = $1, updated_at = $2 WHERE key = $3",
+                &[&value_str, &now, &key],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
+    /// Get consent signature by surgery ID
+    pub async fn get_consent_signature_by_surgery(&self, surgery_id: &str) -> Result<Option<ConsentSignature>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let surgery_uuid = uuid::Uuid::parse_str(surgery_id).map_err(|e| e.to_string())?;
+
+        let row = client
+            .query_opt(
+                "SELECT id, surgery_id, procedure_id, patient_id, patient_signature, patient_name,
+                        witness_signature, witness_name, consent_text, pdf_url, signed_at, signed_by, branch_id
+                 FROM consent_signatures
+                 WHERE surgery_id = $1",
+                &[&surgery_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        match row {
+            Some(row) => {
+                let id: uuid::Uuid = row.get("id");
+                let surgery_id: Option<uuid::Uuid> = row.get("surgery_id");
+                let procedure_id: Option<uuid::Uuid> = row.get("procedure_id");
+                let patient_id: uuid::Uuid = row.get("patient_id");
+                let signed_at: chrono::DateTime<chrono::Utc> = row.get("signed_at");
+                let signed_by: Option<uuid::Uuid> = row.get("signed_by");
+                let branch_id: Option<uuid::Uuid> = row.get("branch_id");
+
+                Ok(Some(ConsentSignature {
+                    id: id.to_string(),
+                    surgery_id: surgery_id.map(|u| u.to_string()),
+                    procedure_id: procedure_id.map(|u| u.to_string()),
+                    patient_id: patient_id.to_string(),
+                    patient_signature: row.get("patient_signature"),
+                    patient_name: row.get("patient_name"),
+                    witness_signature: row.get("witness_signature"),
+                    witness_name: row.get("witness_name"),
+                    consent_text: row.get("consent_text"),
+                    pdf_url: row.get("pdf_url"),
+                    signed_at: signed_at.to_rfc3339(),
+                    signed_by: signed_by.map(|u| u.to_string()),
+                    branch_id: branch_id.map(|u| u.to_string()),
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    // ============================================================
+    // ROOM INVENTORY
+    // ============================================================
+
+    /// Get room inventory categories by branch
+    pub async fn get_room_inventory_categories(&self, branch_id: &str) -> Result<Vec<RoomInventoryCategory>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT id, name, parent_id, display_order, active, branch_id, created_at, updated_at
+                 FROM room_inventory_categories
+                 WHERE branch_id = $1 AND active = true
+                 ORDER BY display_order, name",
+                &[&branch_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| {
+            RoomInventoryCategory {
+                id: row.get::<_, uuid::Uuid>(0).to_string(),
+                name: row.get(1),
+                parent_id: row.get::<_, Option<uuid::Uuid>>(2).map(|u| u.to_string()),
+                display_order: row.get(3),
+                active: row.get(4),
+                branch_id: row.get::<_, uuid::Uuid>(5).to_string(),
+                created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(6).to_rfc3339(),
+                updated_at: row.get::<_, chrono::DateTime<chrono::Utc>>(7).to_rfc3339(),
+            }
+        }).collect())
+    }
+
+    /// Create a room inventory category
+    pub async fn create_room_inventory_category(&self, input: &RoomInventoryCategoryInput) -> Result<RoomInventoryCategory, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(&input.branch_id).map_err(|e| e.to_string())?;
+        let parent_uuid = match &input.parent_id {
+            Some(p) => Some(uuid::Uuid::parse_str(p).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        let display_order = input.display_order.unwrap_or(0);
+
+        let row = client
+            .query_one(
+                "INSERT INTO room_inventory_categories (name, parent_id, display_order, branch_id)
+                 VALUES ($1, $2, $3, $4)
+                 RETURNING id, name, parent_id, display_order, active, branch_id, created_at, updated_at",
+                &[&input.name, &parent_uuid, &display_order, &branch_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(RoomInventoryCategory {
+            id: row.get::<_, uuid::Uuid>(0).to_string(),
+            name: row.get(1),
+            parent_id: row.get::<_, Option<uuid::Uuid>>(2).map(|u| u.to_string()),
+            display_order: row.get(3),
+            active: row.get(4),
+            branch_id: row.get::<_, uuid::Uuid>(5).to_string(),
+            created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(6).to_rfc3339(),
+            updated_at: row.get::<_, chrono::DateTime<chrono::Utc>>(7).to_rfc3339(),
+        })
+    }
+
+    /// Update a room inventory category
+    pub async fn update_room_inventory_category(&self, id: &str, updates: &RoomInventoryCategoryUpdate) -> Result<RoomInventoryCategory, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let category_uuid = uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
+        let parent_uuid = match &updates.parent_id {
+            Some(p) => Some(uuid::Uuid::parse_str(p).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        let now = chrono::Utc::now();
+
+        // Build dynamic update query
+        let row = client
+            .query_one(
+                "UPDATE room_inventory_categories
+                 SET name = COALESCE($1, name),
+                     parent_id = COALESCE($2, parent_id),
+                     display_order = COALESCE($3, display_order),
+                     updated_at = $4
+                 WHERE id = $5
+                 RETURNING id, name, parent_id, display_order, active, branch_id, created_at, updated_at",
+                &[&updates.name, &parent_uuid, &updates.display_order, &now, &category_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(RoomInventoryCategory {
+            id: row.get::<_, uuid::Uuid>(0).to_string(),
+            name: row.get(1),
+            parent_id: row.get::<_, Option<uuid::Uuid>>(2).map(|u| u.to_string()),
+            display_order: row.get(3),
+            active: row.get(4),
+            branch_id: row.get::<_, uuid::Uuid>(5).to_string(),
+            created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(6).to_rfc3339(),
+            updated_at: row.get::<_, chrono::DateTime<chrono::Utc>>(7).to_rfc3339(),
+        })
+    }
+
+    /// Soft delete a room inventory category
+    pub async fn delete_room_inventory_category(&self, id: &str) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let category_uuid = uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now();
+
+        client
+            .execute(
+                "UPDATE room_inventory_categories SET active = false, updated_at = $1 WHERE id = $2",
+                &[&now, &category_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
+    /// Get room inventory items by branch and optional category
+    pub async fn get_room_inventory_items(&self, branch_id: &str, category_id: Option<&str>) -> Result<Vec<RoomInventoryItem>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+
+        let rows = if let Some(cat_id) = category_id {
+            let category_uuid = uuid::Uuid::parse_str(cat_id).map_err(|e| e.to_string())?;
+            client
+                .query(
+                    "SELECT i.id, i.category_id, i.name, i.code, i.brand, i.specification,
+                            i.current_stock, i.min_stock, i.unit, i.notes, i.active, i.branch_id,
+                            i.created_at, i.updated_at,
+                            c.id as c_id, c.name as c_name, c.parent_id as c_parent_id,
+                            c.display_order as c_display_order, c.active as c_active,
+                            c.branch_id as c_branch_id, c.created_at as c_created_at, c.updated_at as c_updated_at
+                     FROM room_inventory_items i
+                     LEFT JOIN room_inventory_categories c ON i.category_id = c.id
+                     WHERE i.branch_id = $1 AND i.category_id = $2 AND i.active = true
+                     ORDER BY i.name",
+                    &[&branch_uuid, &category_uuid],
+                )
+                .await
+                .map_err(|e| e.to_string())?
+        } else {
+            client
+                .query(
+                    "SELECT i.id, i.category_id, i.name, i.code, i.brand, i.specification,
+                            i.current_stock, i.min_stock, i.unit, i.notes, i.active, i.branch_id,
+                            i.created_at, i.updated_at,
+                            c.id as c_id, c.name as c_name, c.parent_id as c_parent_id,
+                            c.display_order as c_display_order, c.active as c_active,
+                            c.branch_id as c_branch_id, c.created_at as c_created_at, c.updated_at as c_updated_at
+                     FROM room_inventory_items i
+                     LEFT JOIN room_inventory_categories c ON i.category_id = c.id
+                     WHERE i.branch_id = $1 AND i.active = true
+                     ORDER BY i.name",
+                    &[&branch_uuid],
+                )
+                .await
+                .map_err(|e| e.to_string())?
+        };
+
+        Ok(rows.iter().map(|row| {
+            let category = row.get::<_, Option<uuid::Uuid>>(14).map(|_| {
+                RoomInventoryCategory {
+                    id: row.get::<_, uuid::Uuid>(14).to_string(),
+                    name: row.get(15),
+                    parent_id: row.get::<_, Option<uuid::Uuid>>(16).map(|u| u.to_string()),
+                    display_order: row.get(17),
+                    active: row.get(18),
+                    branch_id: row.get::<_, uuid::Uuid>(19).to_string(),
+                    created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(20).to_rfc3339(),
+                    updated_at: row.get::<_, chrono::DateTime<chrono::Utc>>(21).to_rfc3339(),
+                }
+            });
+
+            RoomInventoryItem {
+                id: row.get::<_, uuid::Uuid>(0).to_string(),
+                category_id: row.get::<_, uuid::Uuid>(1).to_string(),
+                name: row.get(2),
+                code: row.get(3),
+                brand: row.get(4),
+                specification: row.get(5),
+                current_stock: row.get(6),
+                min_stock: row.get(7),
+                unit: row.get(8),
+                notes: row.get(9),
+                active: row.get(10),
+                branch_id: row.get::<_, uuid::Uuid>(11).to_string(),
+                created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(12).to_rfc3339(),
+                updated_at: row.get::<_, chrono::DateTime<chrono::Utc>>(13).to_rfc3339(),
+                category,
+            }
+        }).collect())
+    }
+
+    /// Create a room inventory item
+    pub async fn create_room_inventory_item(&self, input: &RoomInventoryItemInput) -> Result<RoomInventoryItem, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(&input.branch_id).map_err(|e| e.to_string())?;
+        let category_uuid = uuid::Uuid::parse_str(&input.category_id).map_err(|e| e.to_string())?;
+        let current_stock = input.current_stock.unwrap_or(0);
+        let min_stock = input.min_stock.unwrap_or(5);
+        let unit = input.unit.clone().unwrap_or_else(|| "unidad".to_string());
+
+        let row = client
+            .query_one(
+                "INSERT INTO room_inventory_items (category_id, name, code, brand, specification, current_stock, min_stock, unit, notes, branch_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 RETURNING id, category_id, name, code, brand, specification, current_stock, min_stock, unit, notes, active, branch_id, created_at, updated_at",
+                &[&category_uuid, &input.name, &input.code, &input.brand, &input.specification, &current_stock, &min_stock, &unit, &input.notes, &branch_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(RoomInventoryItem {
+            id: row.get::<_, uuid::Uuid>(0).to_string(),
+            category_id: row.get::<_, uuid::Uuid>(1).to_string(),
+            name: row.get(2),
+            code: row.get(3),
+            brand: row.get(4),
+            specification: row.get(5),
+            current_stock: row.get(6),
+            min_stock: row.get(7),
+            unit: row.get(8),
+            notes: row.get(9),
+            active: row.get(10),
+            branch_id: row.get::<_, uuid::Uuid>(11).to_string(),
+            created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(12).to_rfc3339(),
+            updated_at: row.get::<_, chrono::DateTime<chrono::Utc>>(13).to_rfc3339(),
+            category: None,
+        })
+    }
+
+    /// Update a room inventory item
+    pub async fn update_room_inventory_item(&self, id: &str, updates: &RoomInventoryItemUpdate) -> Result<RoomInventoryItem, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let item_uuid = uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
+        let category_uuid = match &updates.category_id {
+            Some(c) => Some(uuid::Uuid::parse_str(c).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        let now = chrono::Utc::now();
+
+        let row = client
+            .query_one(
+                "UPDATE room_inventory_items
+                 SET category_id = COALESCE($1, category_id),
+                     name = COALESCE($2, name),
+                     code = COALESCE($3, code),
+                     brand = COALESCE($4, brand),
+                     specification = COALESCE($5, specification),
+                     min_stock = COALESCE($6, min_stock),
+                     unit = COALESCE($7, unit),
+                     notes = COALESCE($8, notes),
+                     updated_at = $9
+                 WHERE id = $10
+                 RETURNING id, category_id, name, code, brand, specification, current_stock, min_stock, unit, notes, active, branch_id, created_at, updated_at",
+                &[&category_uuid, &updates.name, &updates.code, &updates.brand, &updates.specification, &updates.min_stock, &updates.unit, &updates.notes, &now, &item_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(RoomInventoryItem {
+            id: row.get::<_, uuid::Uuid>(0).to_string(),
+            category_id: row.get::<_, uuid::Uuid>(1).to_string(),
+            name: row.get(2),
+            code: row.get(3),
+            brand: row.get(4),
+            specification: row.get(5),
+            current_stock: row.get(6),
+            min_stock: row.get(7),
+            unit: row.get(8),
+            notes: row.get(9),
+            active: row.get(10),
+            branch_id: row.get::<_, uuid::Uuid>(11).to_string(),
+            created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(12).to_rfc3339(),
+            updated_at: row.get::<_, chrono::DateTime<chrono::Utc>>(13).to_rfc3339(),
+            category: None,
+        })
+    }
+
+    /// Soft delete a room inventory item
+    pub async fn delete_room_inventory_item(&self, id: &str) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let item_uuid = uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now();
+
+        client
+            .execute(
+                "UPDATE room_inventory_items SET active = false, updated_at = $1 WHERE id = $2",
+                &[&now, &item_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
+    /// Update room inventory item stock
+    pub async fn update_room_inventory_stock(&self, id: &str, new_stock: i32) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let item_uuid = uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now();
+        let stock = std::cmp::max(0, new_stock);
+
+        client
+            .execute(
+                "UPDATE room_inventory_items SET current_stock = $1, updated_at = $2 WHERE id = $3",
+                &[&stock, &now, &item_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
+    /// Create a room inventory movement
+    pub async fn create_room_inventory_movement(&self, input: &RoomInventoryMovementInput) -> Result<RoomInventoryMovement, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(&input.branch_id).map_err(|e| e.to_string())?;
+        let item_uuid = uuid::Uuid::parse_str(&input.item_id).map_err(|e| e.to_string())?;
+        let user_uuid = match &input.user_id {
+            Some(u) => Some(uuid::Uuid::parse_str(u).map_err(|e| e.to_string())?),
+            None => None,
+        };
+
+        let row = client
+            .query_one(
+                "INSERT INTO room_inventory_movements (item_id, quantity, movement_type, notes, user_id, branch_id)
+                 VALUES ($1, $2, $3::room_inventory_movement_type, $4, $5, $6)
+                 RETURNING id, item_id, quantity, movement_type::text, notes, user_id, branch_id, created_at",
+                &[&item_uuid, &input.quantity, &input.movement_type, &input.notes, &user_uuid, &branch_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(RoomInventoryMovement {
+            id: row.get::<_, uuid::Uuid>(0).to_string(),
+            item_id: row.get::<_, uuid::Uuid>(1).to_string(),
+            quantity: row.get(2),
+            movement_type: row.get(3),
+            notes: row.get(4),
+            user_id: row.get::<_, Option<uuid::Uuid>>(5).map(|u| u.to_string()),
+            branch_id: row.get::<_, uuid::Uuid>(6).to_string(),
+            created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(7).to_rfc3339(),
+            item: None,
+        })
+    }
+
+    /// Get room inventory movements
+    pub async fn get_room_inventory_movements(&self, branch_id: &str, item_id: Option<&str>, limit: i32) -> Result<Vec<RoomInventoryMovement>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
+        let limit_i64 = limit as i64;
+
+        let rows = if let Some(item) = item_id {
+            let item_uuid = uuid::Uuid::parse_str(item).map_err(|e| e.to_string())?;
+            client
+                .query(
+                    "SELECT m.id, m.item_id, m.quantity, m.movement_type::text, m.notes, m.user_id, m.branch_id, m.created_at,
+                            i.id as i_id, i.category_id, i.name, i.code, i.brand, i.specification,
+                            i.current_stock, i.min_stock, i.unit, i.notes as i_notes, i.active,
+                            i.branch_id as i_branch_id, i.created_at as i_created_at, i.updated_at as i_updated_at
+                     FROM room_inventory_movements m
+                     LEFT JOIN room_inventory_items i ON m.item_id = i.id
+                     WHERE m.branch_id = $1 AND m.item_id = $2
+                     ORDER BY m.created_at DESC
+                     LIMIT $3",
+                    &[&branch_uuid, &item_uuid, &limit_i64],
+                )
+                .await
+                .map_err(|e| e.to_string())?
+        } else {
+            client
+                .query(
+                    "SELECT m.id, m.item_id, m.quantity, m.movement_type::text, m.notes, m.user_id, m.branch_id, m.created_at,
+                            i.id as i_id, i.category_id, i.name, i.code, i.brand, i.specification,
+                            i.current_stock, i.min_stock, i.unit, i.notes as i_notes, i.active,
+                            i.branch_id as i_branch_id, i.created_at as i_created_at, i.updated_at as i_updated_at
+                     FROM room_inventory_movements m
+                     LEFT JOIN room_inventory_items i ON m.item_id = i.id
+                     WHERE m.branch_id = $1
+                     ORDER BY m.created_at DESC
+                     LIMIT $2",
+                    &[&branch_uuid, &limit_i64],
+                )
+                .await
+                .map_err(|e| e.to_string())?
+        };
+
+        Ok(rows.iter().map(|row| {
+            let item = row.get::<_, Option<uuid::Uuid>>(8).map(|_| {
+                RoomInventoryItem {
+                    id: row.get::<_, uuid::Uuid>(8).to_string(),
+                    category_id: row.get::<_, uuid::Uuid>(9).to_string(),
+                    name: row.get(10),
+                    code: row.get(11),
+                    brand: row.get(12),
+                    specification: row.get(13),
+                    current_stock: row.get(14),
+                    min_stock: row.get(15),
+                    unit: row.get(16),
+                    notes: row.get(17),
+                    active: row.get(18),
+                    branch_id: row.get::<_, uuid::Uuid>(19).to_string(),
+                    created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(20).to_rfc3339(),
+                    updated_at: row.get::<_, chrono::DateTime<chrono::Utc>>(21).to_rfc3339(),
+                    category: None,
+                }
+            });
+
+            RoomInventoryMovement {
+                id: row.get::<_, uuid::Uuid>(0).to_string(),
+                item_id: row.get::<_, uuid::Uuid>(1).to_string(),
+                quantity: row.get(2),
+                movement_type: row.get(3),
+                notes: row.get(4),
+                user_id: row.get::<_, Option<uuid::Uuid>>(5).map(|u| u.to_string()),
+                branch_id: row.get::<_, uuid::Uuid>(6).to_string(),
+                created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(7).to_rfc3339(),
+                item,
+            }
+        }).collect())
+    }
+
+    // ============================================================
+    // ANALYTICS V2 - For Analytics.tsx offline support
+    // ============================================================
+
+    /// Get service sales for analytics (with optional branch filter)
+    pub async fn get_analytics_service_sales(&self, start_date: &str, end_date: &str, branch_filter: Option<&str>) -> Result<Vec<crate::commands::AnalyticsServiceSales>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid: Option<uuid::Uuid> = branch_filter.and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+        let rows = client
+            .query(
+                "SELECT
+                    ii.service_type as service_type,
+                    COUNT(*)::bigint as cantidad,
+                    COALESCE(SUM(ii.total), 0)::float8 as total
+                 FROM invoice_items ii
+                 JOIN invoices i ON ii.invoice_id = i.id
+                 WHERE i.created_at >= $1::timestamptz
+                   AND i.created_at <= $2::timestamptz
+                   AND i.status != 'cancelada'
+                   AND ii.service_type IS NOT NULL
+                   AND ($3::uuid IS NULL OR i.branch_id = $3)
+                 GROUP BY ii.service_type
+                 ORDER BY total DESC",
+                &[&start_date, &end_date, &branch_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::AnalyticsServiceSales {
+            service_type: row.get::<_, Option<String>>(0).unwrap_or_else(|| "Otro".to_string()),
+            cantidad: row.get(1),
+            total: row.get(2),
+        }).collect())
+    }
+
+    /// Get payment methods for analytics (with optional branch filter)
+    pub async fn get_analytics_payment_methods(&self, start_date: &str, end_date: &str, branch_filter: Option<&str>) -> Result<Vec<crate::commands::AnalyticsPaymentMethod>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid: Option<uuid::Uuid> = branch_filter.and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+        let rows = client
+            .query(
+                "SELECT
+                    p.payment_method,
+                    COUNT(*)::bigint as cantidad,
+                    COALESCE(SUM(p.amount), 0)::float8 as total
+                 FROM payments p
+                 JOIN invoices i ON p.invoice_id = i.id
+                 WHERE p.created_at >= $1::timestamptz
+                   AND p.created_at <= $2::timestamptz
+                   AND p.status = 'completado'
+                   AND ($3::uuid IS NULL OR i.branch_id = $3)
+                 GROUP BY p.payment_method
+                 ORDER BY total DESC",
+                &[&start_date, &end_date, &branch_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::AnalyticsPaymentMethod {
+            metodo: row.get::<_, Option<String>>(0).unwrap_or_else(|| "Otro".to_string()),
+            cantidad: row.get(1),
+            total: row.get(2),
+        }).collect())
+    }
+
+    /// Get top inventory products for analytics (with optional branch filter)
+    pub async fn get_analytics_inventory_details(&self, start_date: &str, end_date: &str, branch_filter: Option<&str>) -> Result<Vec<crate::commands::AnalyticsItemDetail>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid: Option<uuid::Uuid> = branch_filter.and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+        let rows = client
+            .query(
+                "SELECT
+                    COALESCE(ii.item_id::text, '') as item_id,
+                    COALESCE(ii.description, 'Sin nombre') as item_name,
+                    COALESCE(SUM(ii.quantity), 0)::bigint as total_quantity,
+                    COALESCE(SUM(ii.total), 0)::float8 as total_revenue
+                 FROM invoice_items ii
+                 JOIN invoices i ON ii.invoice_id = i.id
+                 WHERE i.created_at >= $1::timestamptz
+                   AND i.created_at <= $2::timestamptz
+                   AND i.status != 'cancelada'
+                   AND ii.item_type = 'producto'
+                   AND ($3::uuid IS NULL OR i.branch_id = $3)
+                 GROUP BY ii.item_id, ii.description
+                 ORDER BY total_revenue DESC
+                 LIMIT 10",
+                &[&start_date, &end_date, &branch_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::AnalyticsItemDetail {
+            item_id: row.get(0),
+            item_name: row.get(1),
+            total_quantity: row.get(2),
+            total_revenue: row.get(3),
+        }).collect())
+    }
+
+    /// Get top service items for analytics (with optional branch filter)
+    pub async fn get_analytics_service_details(&self, start_date: &str, end_date: &str, branch_filter: Option<&str>) -> Result<Vec<crate::commands::AnalyticsItemDetail>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid: Option<uuid::Uuid> = branch_filter.and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+        let rows = client
+            .query(
+                "SELECT
+                    COALESCE(ii.item_id::text, '') as item_id,
+                    COALESCE(ii.description, 'Sin nombre') as item_name,
+                    COALESCE(SUM(ii.quantity), 0)::bigint as total_quantity,
+                    COALESCE(SUM(ii.total), 0)::float8 as total_revenue
+                 FROM invoice_items ii
+                 JOIN invoices i ON ii.invoice_id = i.id
+                 WHERE i.created_at >= $1::timestamptz
+                   AND i.created_at <= $2::timestamptz
+                   AND i.status != 'cancelada'
+                   AND ii.item_type = 'servicio'
+                   AND ($3::uuid IS NULL OR i.branch_id = $3)
+                 GROUP BY ii.item_id, ii.description
+                 ORDER BY total_revenue DESC
+                 LIMIT 10",
+                &[&start_date, &end_date, &branch_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::AnalyticsItemDetail {
+            item_id: row.get(0),
+            item_name: row.get(1),
+            total_quantity: row.get(2),
+            total_revenue: row.get(3),
+        }).collect())
+    }
+
+    /// Get clinical stats with revenue for analytics
+    pub async fn get_clinical_stats_with_revenue(&self, start_date: &str, end_date: &str, doctor_filter: Option<&str>, branch_filter: Option<&str>) -> Result<Vec<crate::commands::ClinicalStatsWithRevenue>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let doctor_uuid: Option<uuid::Uuid> = doctor_filter.and_then(|s| uuid::Uuid::parse_str(s).ok());
+        let branch_uuid: Option<uuid::Uuid> = branch_filter.and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+        let rows = client
+            .query(
+                "WITH appointment_data AS (
+                    SELECT
+                        a.id as appointment_id,
+                        a.type as tipo_cita,
+                        a.doctor_id,
+                        COALESCE(p.full_name, 'Sin asignar') as doctor_name,
+                        a.patient_id,
+                        a.starts_at
+                    FROM appointments a
+                    LEFT JOIN profiles p ON a.doctor_id = p.user_id
+                    WHERE a.starts_at >= $1::timestamptz
+                      AND a.starts_at <= $2::timestamptz
+                      AND a.status = 'done'
+                      AND ($3::uuid IS NULL OR a.doctor_id = $3)
+                      AND ($4::uuid IS NULL OR a.branch_id = $4)
+                ),
+                service_prices_lookup AS (
+                    SELECT service_type, price
+                    FROM service_prices
+                    WHERE active = true
+                ),
+                calculated_revenue AS (
+                    SELECT
+                        ad.tipo_cita,
+                        ad.doctor_id,
+                        ad.doctor_name,
+                        ad.patient_id,
+                        COALESCE(
+                            (SELECT SUM(ii.total) FROM invoice_items ii
+                             JOIN invoices i ON ii.invoice_id = i.id
+                             WHERE i.appointment_id = ad.appointment_id
+                               AND i.status != 'cancelada'),
+                            0
+                        ) as revenue_real,
+                        COALESCE(
+                            (SELECT sp.price FROM service_prices_lookup sp
+                             WHERE sp.service_type = ad.tipo_cita
+                             LIMIT 1),
+                            0
+                        ) as revenue_estimado
+                    FROM appointment_data ad
+                )
+                SELECT
+                    tipo_cita,
+                    doctor_id::text,
+                    doctor_name,
+                    COUNT(*)::bigint as cantidad,
+                    COUNT(DISTINCT patient_id)::bigint as pacientes_unicos,
+                    SUM(revenue_real)::float8 as revenue_real,
+                    SUM(revenue_estimado)::float8 as revenue_estimado,
+                    SUM(GREATEST(revenue_real, revenue_estimado))::float8 as revenue_total
+                FROM calculated_revenue
+                GROUP BY tipo_cita, doctor_id, doctor_name
+                ORDER BY revenue_total DESC",
+                &[&start_date, &end_date, &doctor_uuid, &branch_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::ClinicalStatsWithRevenue {
+            tipo_cita: row.get::<_, Option<String>>(0).unwrap_or_else(|| "desconocido".to_string()),
+            doctor_id: row.get(1),
+            doctor_name: row.get(2),
+            cantidad: row.get(3),
+            pacientes_unicos: row.get(4),
+            revenue_real: row.get(5),
+            revenue_estimado: row.get(6),
+            revenue_total: row.get(7),
+        }).collect())
+    }
+
+    /// Get invoices for analytics metrics
+    pub async fn get_analytics_invoices(&self, start_date: &str, end_date: &str, branch_filter: Option<&str>) -> Result<Vec<crate::commands::AnalyticsInvoice>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid: Option<uuid::Uuid> = branch_filter.and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+        let rows = client
+            .query(
+                "SELECT
+                    id::text,
+                    COALESCE(total_amount, 0)::float8 as total_amount,
+                    created_at::text,
+                    status,
+                    COALESCE(discount_value, 0)::float8 as discount_value,
+                    discount_type
+                 FROM invoices
+                 WHERE created_at >= $1::timestamptz
+                   AND created_at <= $2::timestamptz
+                   AND status != 'cancelada'
+                   AND ($3::uuid IS NULL OR branch_id = $3)
+                 ORDER BY created_at",
+                &[&start_date, &end_date, &branch_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::AnalyticsInvoice {
+            id: row.get(0),
+            total_amount: row.get(1),
+            created_at: row.get(2),
+            status: row.get(3),
+            discount_value: row.get(4),
+            discount_type: row.get(5),
+        }).collect())
+    }
+
+    /// Get cash closures for analytics
+    pub async fn get_analytics_closures(&self, start_date: &str, end_date: &str, branch_filter: Option<&str>) -> Result<Vec<crate::commands::AnalyticsClosure>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let branch_uuid: Option<uuid::Uuid> = branch_filter.and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+        let rows = client
+            .query(
+                "SELECT
+                    c.id::text,
+                    c.closure_date::text,
+                    COALESCE(c.total_invoiced, 0)::float8 as total_invoiced,
+                    COALESCE(c.total_collected, 0)::float8 as total_collected,
+                    COALESCE(c.total_pending, 0)::float8 as total_pending,
+                    c.closed_by::text,
+                    COALESCE(p.full_name, 'N/A') as user_name
+                 FROM cash_closures c
+                 LEFT JOIN profiles p ON c.closed_by = p.user_id
+                 WHERE c.closure_date >= $1::timestamptz
+                   AND c.closure_date <= $2::timestamptz
+                   AND ($3::uuid IS NULL OR c.branch_id = $3)
+                 ORDER BY c.closure_date DESC",
+                &[&start_date, &end_date, &branch_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::AnalyticsClosure {
+            id: row.get(0),
+            closure_date: row.get(1),
+            total_invoiced: row.get(2),
+            total_collected: row.get(3),
+            total_pending: row.get(4),
+            closed_by: row.get(5),
+            user_name: row.get(6),
+        }).collect())
+    }
+
+    /// Get appointments for analytics daily trend
+    pub async fn get_analytics_appointments(&self, start_date: &str, end_date: &str, doctor_filter: Option<&str>, branch_filter: Option<&str>) -> Result<Vec<crate::commands::AnalyticsAppointment>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let doctor_uuid: Option<uuid::Uuid> = doctor_filter.and_then(|s| uuid::Uuid::parse_str(s).ok());
+        let branch_uuid: Option<uuid::Uuid> = branch_filter.and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+        let rows = client
+            .query(
+                "SELECT
+                    id::text,
+                    starts_at::text,
+                    type
+                 FROM appointments
+                 WHERE starts_at >= $1::timestamptz
+                   AND starts_at <= $2::timestamptz
+                   AND status = 'done'
+                   AND ($3::uuid IS NULL OR doctor_id = $3)
+                   AND ($4::uuid IS NULL OR branch_id = $4)
+                 ORDER BY starts_at",
+                &[&start_date, &end_date, &doctor_uuid, &branch_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::AnalyticsAppointment {
+            id: row.get(0),
+            starts_at: row.get(1),
+            appointment_type: row.get(2),
+        }).collect())
+    }
+
+    /// Get doctors list for analytics
+    pub async fn get_analytics_doctors(&self) -> Result<Vec<crate::commands::AnalyticsDoctor>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT p.user_id::text, p.full_name
+                 FROM profiles p
+                 JOIN user_roles ur ON p.user_id = ur.user_id
+                 WHERE ur.role = 'doctor'
+                 ORDER BY p.full_name",
+                &[],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::AnalyticsDoctor {
+            user_id: row.get(0),
+            full_name: row.get(1),
+        }).collect())
+    }
+
+    // ============================================================
+    // RESEARCH - Clinical Research Data
+    // ============================================================
+
+    /// Get clinical research data by encounter
+    pub async fn get_clinical_research_data(&self, filters: &crate::commands::ResearchFilters) -> Result<Vec<crate::commands::ClinicalResearchRow>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+
+        let doctor_uuid: Option<uuid::Uuid> = filters.doctor_filter.as_ref().and_then(|s| uuid::Uuid::parse_str(s).ok());
+        let diagnosis_filter = filters.diagnosis_filter.clone();
+        let search_field_type = filters.search_field_type.clone().unwrap_or_else(|| "diagnosis".to_string());
+        let surgery_type_filter = filters.surgery_type_filter.clone();
+        let appointment_type_filter = filters.appointment_type_filter.clone();
+
+        // Build the complex query with dynamic text search
+        let query = r#"
+            WITH encounters_base AS (
+                SELECT
+                    e.id as encounter_id,
+                    e.patient_id,
+                    e.appointment_id,
+                    e.created_at as encounter_date,
+                    e.chief_complaint,
+                    a.type as appointment_type,
+                    a.doctor_id,
+                    p.full_name as doctor_name
+                FROM encounters e
+                LEFT JOIN appointments a ON e.appointment_id = a.id
+                LEFT JOIN profiles p ON a.doctor_id = p.user_id
+                WHERE e.created_at >= $1::timestamptz
+                  AND e.created_at <= $2::timestamptz
+                  AND ($3::uuid IS NULL OR a.doctor_id = $3)
+                  AND ($4::text IS NULL OR a.type = $4)
+            ),
+            diagnoses_agg AS (
+                SELECT
+                    d.encounter_id,
+                    string_agg(DISTINCT d.description, '; ') as diagnosis_summary,
+                    string_agg(DISTINCT d.treatment_plan, '; ') as treatment_plan,
+                    string_agg(DISTINCT d.recommended_surgeries, '; ') as recommended_surgeries,
+                    string_agg(DISTINCT d.recommended_studies, '; ') as recommended_studies
+                FROM diagnoses d
+                GROUP BY d.encounter_id
+            ),
+            exam_od AS (
+                SELECT
+                    ee.encounter_id,
+                    ee.avsc as od_avsc,
+                    ee.avcc as od_avcc,
+                    ee.pio as od_pio,
+                    ee.autorefractor as od_autorefractor,
+                    ee.lensometry as od_lensometry,
+                    ee.keratometry as od_keratometry,
+                    ee.subjective_refraction as od_subjective_refraction,
+                    ee.final_prescription as od_final_prescription,
+                    ee.slit_lamp as od_slit_lamp,
+                    ee.fundus as od_fundus
+                FROM exam_eye ee
+                WHERE ee.eye = 'OD'
+            ),
+            exam_oi AS (
+                SELECT
+                    ee.encounter_id,
+                    ee.avsc as oi_avsc,
+                    ee.avcc as oi_avcc,
+                    ee.pio as oi_pio,
+                    ee.autorefractor as oi_autorefractor,
+                    ee.lensometry as oi_lensometry,
+                    ee.keratometry as oi_keratometry,
+                    ee.subjective_refraction as oi_subjective_refraction,
+                    ee.final_prescription as oi_final_prescription,
+                    ee.slit_lamp as oi_slit_lamp,
+                    ee.fundus as oi_fundus
+                FROM exam_eye ee
+                WHERE ee.eye = 'OI'
+            ),
+            surgeries_agg AS (
+                SELECT
+                    s.encounter_id,
+                    st.name as surgery_type,
+                    s.eye as surgery_eye,
+                    s.surgery_date::text as surgery_date
+                FROM surgeries s
+                LEFT JOIN surgery_types st ON s.surgery_type_id = st.id
+            ),
+            procedures_agg AS (
+                SELECT
+                    pr.encounter_id,
+                    pt.name as procedure_type,
+                    pr.eye as procedure_eye
+                FROM procedures pr
+                LEFT JOIN procedure_types pt ON pr.procedure_type_id = pt.id
+            ),
+            studies_agg AS (
+                SELECT
+                    st.encounter_id,
+                    sty.name as study_type,
+                    st.status as study_status
+                FROM studies st
+                LEFT JOIN study_types sty ON st.study_type_id = sty.id
+            )
+            SELECT
+                pt.id::text as patient_id,
+                pt.code as patient_code,
+                CONCAT(pt.first_name, ' ', pt.last_name) as patient_name,
+                EXTRACT(YEAR FROM age(pt.birthdate))::integer as patient_age,
+                pt.gender as patient_gender,
+                COALESCE(pt.pathological_history->>'diabetes', 'false')::boolean as has_diabetes,
+                COALESCE(pt.pathological_history->>'hipertension', 'false')::boolean as has_hta,
+                eb.encounter_id::text,
+                eb.encounter_date::text,
+                eb.appointment_type,
+                eb.doctor_name,
+                eb.chief_complaint,
+                da.diagnosis_summary,
+                da.treatment_plan,
+                da.recommended_surgeries,
+                da.recommended_studies,
+                eod.od_avsc,
+                eod.od_avcc,
+                eod.od_pio,
+                eod.od_autorefractor,
+                eod.od_lensometry,
+                eod.od_keratometry,
+                eod.od_subjective_refraction,
+                eod.od_final_prescription,
+                eod.od_slit_lamp,
+                eod.od_fundus,
+                eoi.oi_avsc,
+                eoi.oi_avcc,
+                eoi.oi_pio,
+                eoi.oi_autorefractor,
+                eoi.oi_lensometry,
+                eoi.oi_keratometry,
+                eoi.oi_subjective_refraction,
+                eoi.oi_final_prescription,
+                eoi.oi_slit_lamp,
+                eoi.oi_fundus,
+                sa.surgery_type,
+                sa.surgery_eye,
+                sa.surgery_date,
+                pa.procedure_type,
+                pa.procedure_eye,
+                sta.study_type,
+                sta.study_status
+            FROM encounters_base eb
+            JOIN patients pt ON eb.patient_id = pt.id
+            LEFT JOIN diagnoses_agg da ON eb.encounter_id = da.encounter_id
+            LEFT JOIN exam_od eod ON eb.encounter_id = eod.encounter_id
+            LEFT JOIN exam_oi eoi ON eb.encounter_id = eoi.encounter_id
+            LEFT JOIN surgeries_agg sa ON eb.encounter_id = sa.encounter_id
+            LEFT JOIN procedures_agg pa ON eb.encounter_id = pa.encounter_id
+            LEFT JOIN studies_agg sta ON eb.encounter_id = sta.encounter_id
+            WHERE (
+                $5::text IS NULL
+                OR (
+                    CASE $6::text
+                        WHEN 'diagnosis' THEN COALESCE(da.diagnosis_summary, '') ILIKE '%' || $5 || '%'
+                        WHEN 'treatment_plan' THEN COALESCE(da.treatment_plan, '') ILIKE '%' || $5 || '%'
+                        WHEN 'surgeries' THEN COALESCE(da.recommended_surgeries, '') ILIKE '%' || $5 || '%'
+                        WHEN 'studies' THEN COALESCE(da.recommended_studies, '') ILIKE '%' || $5 || '%'
+                        WHEN 'chief_complaint' THEN COALESCE(eb.chief_complaint, '') ILIKE '%' || $5 || '%'
+                        WHEN 'all' THEN (
+                            COALESCE(da.diagnosis_summary, '') ILIKE '%' || $5 || '%'
+                            OR COALESCE(da.treatment_plan, '') ILIKE '%' || $5 || '%'
+                            OR COALESCE(da.recommended_surgeries, '') ILIKE '%' || $5 || '%'
+                            OR COALESCE(da.recommended_studies, '') ILIKE '%' || $5 || '%'
+                            OR COALESCE(eb.chief_complaint, '') ILIKE '%' || $5 || '%'
+                        )
+                        ELSE COALESCE(da.diagnosis_summary, '') ILIKE '%' || $5 || '%'
+                    END
+                )
+            )
+            AND ($7::text IS NULL OR sa.surgery_type ILIKE '%' || $7 || '%')
+            AND ($8::integer IS NULL OR EXTRACT(YEAR FROM age(pt.birthdate)) >= $8)
+            AND ($9::integer IS NULL OR EXTRACT(YEAR FROM age(pt.birthdate)) <= $9)
+            AND ($10::text IS NULL OR pt.gender = $10)
+            AND ($11::boolean IS NULL OR ($11 = true AND COALESCE(pt.pathological_history->>'diabetes', 'false')::boolean = true))
+            AND ($12::boolean IS NULL OR ($12 = true AND COALESCE(pt.pathological_history->>'hipertension', 'false')::boolean = true))
+            ORDER BY eb.encounter_date DESC
+            LIMIT 1000
+        "#;
+
+        let rows = client
+            .query(
+                query,
+                &[
+                    &filters.start_date,
+                    &filters.end_date,
+                    &doctor_uuid,
+                    &appointment_type_filter,
+                    &diagnosis_filter,
+                    &search_field_type,
+                    &surgery_type_filter,
+                    &filters.min_age,
+                    &filters.max_age,
+                    &filters.gender_filter,
+                    &filters.has_diabetes,
+                    &filters.has_hta,
+                ],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::ClinicalResearchRow {
+            patient_id: row.get(0),
+            patient_code: row.get(1),
+            patient_name: row.get(2),
+            patient_age: row.get(3),
+            patient_gender: row.get(4),
+            has_diabetes: row.get(5),
+            has_hta: row.get(6),
+            encounter_id: row.get(7),
+            encounter_date: row.get(8),
+            appointment_type: row.get(9),
+            doctor_name: row.get(10),
+            chief_complaint: row.get(11),
+            diagnosis_summary: row.get(12),
+            treatment_plan: row.get(13),
+            recommended_surgeries: row.get(14),
+            recommended_studies: row.get(15),
+            od_avsc: row.get(16),
+            od_avcc: row.get(17),
+            od_pio: row.get(18),
+            od_autorefractor: row.get(19),
+            od_lensometry: row.get(20),
+            od_keratometry: row.get(21),
+            od_subjective_refraction: row.get(22),
+            od_final_prescription: row.get(23),
+            od_slit_lamp: row.get(24),
+            od_fundus: row.get(25),
+            oi_avsc: row.get(26),
+            oi_avcc: row.get(27),
+            oi_pio: row.get(28),
+            oi_autorefractor: row.get(29),
+            oi_lensometry: row.get(30),
+            oi_keratometry: row.get(31),
+            oi_subjective_refraction: row.get(32),
+            oi_final_prescription: row.get(33),
+            oi_slit_lamp: row.get(34),
+            oi_fundus: row.get(35),
+            surgery_type: row.get(36),
+            surgery_eye: row.get(37),
+            surgery_date: row.get(38),
+            procedure_type: row.get(39),
+            procedure_eye: row.get(40),
+            study_type: row.get(41),
+            study_status: row.get(42),
+        }).collect())
+    }
+
+    /// Get clinical research data grouped by patient
+    pub async fn get_clinical_research_data_by_patient(&self, filters: &crate::commands::ResearchFilters) -> Result<Vec<crate::commands::ClinicalResearchPatient>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+
+        let doctor_uuid: Option<uuid::Uuid> = filters.doctor_filter.as_ref().and_then(|s| uuid::Uuid::parse_str(s).ok());
+        let diagnosis_filter = filters.diagnosis_filter.clone();
+        let search_field_type = filters.search_field_type.clone().unwrap_or_else(|| "diagnosis".to_string());
+        let surgery_type_filter = filters.surgery_type_filter.clone();
+        let appointment_type_filter = filters.appointment_type_filter.clone();
+
+        // Query patients with their visits
+        let query = r#"
+            WITH filtered_encounters AS (
+                SELECT
+                    e.id as encounter_id,
+                    e.patient_id,
+                    e.created_at as encounter_date,
+                    a.type as appointment_type,
+                    p.full_name as doctor_name,
+                    d.diagnosis_summary,
+                    d.treatment_plan,
+                    eod.od_avsc, eod.od_avcc, eod.od_pio,
+                    eoi.oi_avsc, eoi.oi_avcc, eoi.oi_pio,
+                    sa.surgery_type
+                FROM encounters e
+                LEFT JOIN appointments a ON e.appointment_id = a.id
+                LEFT JOIN profiles p ON a.doctor_id = p.user_id
+                LEFT JOIN LATERAL (
+                    SELECT string_agg(DISTINCT description, '; ') as diagnosis_summary,
+                           string_agg(DISTINCT treatment_plan, '; ') as treatment_plan,
+                           string_agg(DISTINCT recommended_surgeries, '; ') as recommended_surgeries
+                    FROM diagnoses WHERE encounter_id = e.id
+                ) d ON true
+                LEFT JOIN LATERAL (
+                    SELECT avsc as od_avsc, avcc as od_avcc, pio as od_pio
+                    FROM exam_eye WHERE encounter_id = e.id AND eye = 'OD' LIMIT 1
+                ) eod ON true
+                LEFT JOIN LATERAL (
+                    SELECT avsc as oi_avsc, avcc as oi_avcc, pio as oi_pio
+                    FROM exam_eye WHERE encounter_id = e.id AND eye = 'OI' LIMIT 1
+                ) eoi ON true
+                LEFT JOIN LATERAL (
+                    SELECT st.name as surgery_type
+                    FROM surgeries s
+                    LEFT JOIN surgery_types st ON s.surgery_type_id = st.id
+                    WHERE s.encounter_id = e.id LIMIT 1
+                ) sa ON true
+                WHERE e.created_at >= $1::timestamptz
+                  AND e.created_at <= $2::timestamptz
+                  AND ($3::uuid IS NULL OR a.doctor_id = $3)
+                  AND ($4::text IS NULL OR a.type = $4)
+                  AND (
+                      $5::text IS NULL
+                      OR (
+                          CASE $6::text
+                              WHEN 'diagnosis' THEN COALESCE(d.diagnosis_summary, '') ILIKE '%' || $5 || '%'
+                              WHEN 'treatment_plan' THEN COALESCE(d.treatment_plan, '') ILIKE '%' || $5 || '%'
+                              WHEN 'surgeries' THEN COALESCE(d.recommended_surgeries, '') ILIKE '%' || $5 || '%'
+                              WHEN 'all' THEN (
+                                  COALESCE(d.diagnosis_summary, '') ILIKE '%' || $5 || '%'
+                                  OR COALESCE(d.treatment_plan, '') ILIKE '%' || $5 || '%'
+                                  OR COALESCE(d.recommended_surgeries, '') ILIKE '%' || $5 || '%'
+                              )
+                              ELSE COALESCE(d.diagnosis_summary, '') ILIKE '%' || $5 || '%'
+                          END
+                      )
+                  )
+                  AND ($7::text IS NULL OR sa.surgery_type ILIKE '%' || $7 || '%')
+            ),
+            patient_visits AS (
+                SELECT
+                    fe.patient_id,
+                    json_agg(
+                        json_build_object(
+                            'encounter_id', fe.encounter_id::text,
+                            'encounter_date', fe.encounter_date::text,
+                            'appointment_type', fe.appointment_type,
+                            'doctor_name', fe.doctor_name,
+                            'diagnosis_summary', fe.diagnosis_summary,
+                            'treatment_plan', fe.treatment_plan,
+                            'od_avsc', fe.od_avsc,
+                            'od_avcc', fe.od_avcc,
+                            'od_pio', fe.od_pio,
+                            'oi_avsc', fe.oi_avsc,
+                            'oi_avcc', fe.oi_avcc,
+                            'oi_pio', fe.oi_pio
+                        ) ORDER BY fe.encounter_date DESC
+                    ) as visits,
+                    COUNT(*)::integer as total_visits,
+                    MIN(fe.encounter_date)::text as first_visit,
+                    MAX(fe.encounter_date)::text as last_visit
+                FROM filtered_encounters fe
+                GROUP BY fe.patient_id
+            )
+            SELECT
+                pt.id::text as patient_id,
+                pt.code as patient_code,
+                CONCAT(pt.first_name, ' ', pt.last_name) as patient_name,
+                EXTRACT(YEAR FROM age(pt.birthdate))::integer as patient_age,
+                pt.gender as patient_gender,
+                COALESCE(pt.pathological_history->>'diabetes', 'false')::boolean as has_diabetes,
+                COALESCE(pt.pathological_history->>'hipertension', 'false')::boolean as has_hta,
+                pv.total_visits,
+                pv.first_visit,
+                pv.last_visit,
+                pv.visits
+            FROM patient_visits pv
+            JOIN patients pt ON pv.patient_id = pt.id
+            WHERE ($8::integer IS NULL OR EXTRACT(YEAR FROM age(pt.birthdate)) >= $8)
+              AND ($9::integer IS NULL OR EXTRACT(YEAR FROM age(pt.birthdate)) <= $9)
+              AND ($10::text IS NULL OR pt.gender = $10)
+              AND ($11::boolean IS NULL OR ($11 = true AND COALESCE(pt.pathological_history->>'diabetes', 'false')::boolean = true))
+              AND ($12::boolean IS NULL OR ($12 = true AND COALESCE(pt.pathological_history->>'hipertension', 'false')::boolean = true))
+            ORDER BY pv.last_visit DESC
+            LIMIT 500
+        "#;
+
+        let rows = client
+            .query(
+                query,
+                &[
+                    &filters.start_date,
+                    &filters.end_date,
+                    &doctor_uuid,
+                    &appointment_type_filter,
+                    &diagnosis_filter,
+                    &search_field_type,
+                    &surgery_type_filter,
+                    &filters.min_age,
+                    &filters.max_age,
+                    &filters.gender_filter,
+                    &filters.has_diabetes,
+                    &filters.has_hta,
+                ],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| {
+            let visits_json: Option<serde_json::Value> = row.get(10);
+            let visits: Vec<crate::commands::PatientVisit> = visits_json
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
+
+            crate::commands::ClinicalResearchPatient {
+                patient_id: row.get(0),
+                patient_code: row.get(1),
+                patient_name: row.get(2),
+                patient_age: row.get(3),
+                patient_gender: row.get(4),
+                has_diabetes: row.get(5),
+                has_hta: row.get(6),
+                total_visits: row.get(7),
+                first_visit: row.get(8),
+                last_visit: row.get(9),
+                visits,
+            }
+        }).collect())
+    }
+
+    // ============================================================
+    // DOCTOR DETAIL DIALOG
+    // ============================================================
+
+    /// Get doctor activity detail (desglose completo de actividad)
+    pub async fn get_doctor_activity_detail(
+        &self,
+        start_date: &str,
+        end_date: &str,
+        doctor_filter: &str,
+        branch_filter: Option<&str>,
+    ) -> Result<Vec<crate::commands::DoctorActivityDetail>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+
+        let doctor_uuid = uuid::Uuid::parse_str(doctor_filter).map_err(|e| e.to_string())?;
+        let branch_uuid: Option<uuid::Uuid> = branch_filter.and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+        // Query similar to get_doctor_activity_detail_v4 RPC
+        let query = r#"
+            SELECT
+                a.id::text as appointment_id,
+                pt.code as patient_code,
+                UPPER(COALESCE(pt.first_name, '') || ' ' || COALESCE(pt.last_name, '')) as patient_name,
+                a.type as appointment_type,
+                a.starts_at::text as appointment_date,
+                CASE WHEN i.id IS NOT NULL AND i.status != 'cancelada' THEN true ELSE false END as is_invoiced,
+                COALESCE(a.reason ILIKE '%cortesia%' OR a.reason ILIKE '%cortesía%', false) as is_courtesy,
+                COALESCE(i.total_amount, 0)::float8 as invoice_amount,
+                (SELECT st.name FROM surgeries s
+                 JOIN surgery_types st ON s.surgery_type_id = st.id
+                 JOIN encounters e ON s.encounter_id = e.id
+                 WHERE e.appointment_id = a.id
+                 LIMIT 1) as surgery_type,
+                (SELECT pt2.name FROM procedures pr
+                 JOIN procedure_types pt2 ON pr.procedure_type_id = pt2.id
+                 JOIN encounters e ON pr.encounter_id = e.id
+                 WHERE e.appointment_id = a.id
+                 LIMIT 1) as procedure_type
+            FROM appointments a
+            LEFT JOIN patients pt ON a.patient_id = pt.id
+            LEFT JOIN invoices i ON i.appointment_id = a.id AND i.status != 'cancelada'
+            WHERE a.doctor_id = $1
+              AND a.starts_at::date >= $2::date
+              AND a.starts_at::date <= $3::date
+              AND a.status = 'done'
+              AND ($4::uuid IS NULL OR a.branch_id = $4)
+            ORDER BY a.starts_at DESC
+        "#;
+
+        let rows = client
+            .query(query, &[&doctor_uuid, &start_date, &end_date, &branch_uuid])
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::DoctorActivityDetail {
+            appointment_id: row.get(0),
+            patient_code: row.get(1),
+            patient_name: row.get(2),
+            appointment_type: row.get(3),
+            appointment_date: row.get(4),
+            is_invoiced: row.get(5),
+            is_courtesy: row.get(6),
+            invoice_amount: row.get(7),
+            surgery_type: row.get(8),
+            procedure_type: row.get(9),
+        }).collect())
+    }
+
+    /// Get referred studies by doctor (estudios donde el doctor es el referidor)
+    pub async fn get_referred_studies_by_doctor(
+        &self,
+        doctor_id: &str,
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<Vec<crate::commands::ReferredStudy>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+
+        let doctor_uuid = uuid::Uuid::parse_str(doctor_id).map_err(|e| e.to_string())?;
+
+        // First find the referring_doctor entry for this internal profile
+        let ref_doc_row = client
+            .query_opt(
+                "SELECT id FROM referring_doctors WHERE internal_profile_id = $1",
+                &[&doctor_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let ref_doc_id: Option<uuid::Uuid> = ref_doc_row.map(|r| r.get(0));
+
+        if ref_doc_id.is_none() {
+            return Ok(Vec::new());
+        }
+
+        let ref_doc_id = ref_doc_id.unwrap();
+
+        // Query studies referred by this doctor
+        let query = r#"
+            SELECT
+                s.id::text,
+                s.study_type as title,
+                (SELECT sf.side FROM study_files sf WHERE sf.study_id = s.id LIMIT 1) as eye_side,
+                s.date::text as created_at,
+                pt.code as patient_code,
+                COALESCE(pt.first_name, '') as patient_first_name,
+                COALESCE(pt.last_name, '') as patient_last_name,
+                (SELECT COUNT(*)::int4 FROM study_files sf WHERE sf.study_id = s.id) as files_count
+            FROM studies s
+            LEFT JOIN patients pt ON s.patient_id = pt.id
+            WHERE s.ordered_by = $1
+              AND s.date >= $2::date
+              AND s.date <= $3::date
+            ORDER BY s.date DESC
+        "#;
+
+        let rows = client
+            .query(query, &[&ref_doc_id, &start_date, &end_date])
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.iter().map(|row| crate::commands::ReferredStudy {
+            id: row.get(0),
+            title: row.get(1),
+            eye_side: row.get(2),
+            created_at: row.get::<_, Option<String>>(3).unwrap_or_default(),
+            patient_code: row.get(4),
+            patient_first_name: row.get(5),
+            patient_last_name: row.get(6),
+            files_count: row.get(7),
+        }).collect())
     }
 }

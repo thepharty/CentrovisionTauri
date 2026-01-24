@@ -3,6 +3,13 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 import { Button } from '@/components/ui/button';
 import {
   Form,
@@ -59,6 +66,8 @@ export default function ServicePriceForm({
   onSuccess
 }: ServicePriceFormProps) {
   const queryClient = useQueryClient();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   const form = useForm<ServiceFormValues>({
     resolver: zodResolver(serviceSchema),
@@ -72,6 +81,19 @@ export default function ServicePriceForm({
 
   const createMutation = useMutation({
     mutationFn: async (values: ServiceFormValues) => {
+      if (isLocalMode) {
+        // En modo local, usar el comando Tauri
+        const data = await invoke<any>('create_service_price', {
+          service: {
+            service_name: values.service_name,
+            service_type: values.service_type,
+            price: values.price,
+            active: values.active
+          }
+        });
+        return data;
+      }
+
       const { data, error } = await supabase
         .from('service_prices')
         .insert({
@@ -82,7 +104,7 @@ export default function ServicePriceForm({
         })
         .select()
         .single();
-      
+
       if (error) throw error;
       return data;
     },
@@ -105,6 +127,20 @@ export default function ServicePriceForm({
 
   const updateMutation = useMutation({
     mutationFn: async (values: ServiceFormValues) => {
+      if (isLocalMode) {
+        // En modo local, usar el comando Tauri
+        const data = await invoke<any>('update_service_price', {
+          id: serviceId!,
+          updates: {
+            service_name: values.service_name,
+            service_type: values.service_type,
+            price: values.price,
+            active: values.active
+          }
+        });
+        return data;
+      }
+
       const { data, error } = await supabase
         .from('service_prices')
         .update({
@@ -116,7 +152,7 @@ export default function ServicePriceForm({
         .eq('id', serviceId!)
         .select()
         .single();
-      
+
       if (error) throw error;
       return data;
     },

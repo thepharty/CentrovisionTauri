@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
 import { useBranch } from "@/hooks/useBranch";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,18 +17,37 @@ import { clinicNow } from "@/lib/timezone";
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
 export function ProductsReport() {
   const { currentBranch } = useBranch();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const [dateFrom, setDateFrom] = useState(format(clinicNow(), "yyyy-MM-dd"));
   const [dateTo, setDateTo] = useState(format(clinicNow(), "yyyy-MM-dd"));
   const [categoryFilter, setCategoryFilter] = useState<string>("todas");
   const [searchTerm, setSearchTerm] = useState("");
 
   const { data: products, isLoading, refetch } = useQuery({
-    queryKey: ['products-report', dateFrom, dateTo, currentBranch?.id],
+    queryKey: ['products-report', dateFrom, dateTo, currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!currentBranch?.id) return [];
-      
+
+      // Modo local: usar Tauri command
+      if (isLocalMode) {
+        const startDate = `${dateFrom}T00:00:00`;
+        const endDate = `${dateTo}T23:59:59`;
+        return await invoke<any[]>('get_products_report', {
+          branchId: currentBranch.id,
+          startDate,
+          endDate,
+        });
+      }
+
+      // Modo online: Supabase queries
       // Primera query: obtener los invoice_items
       const { data: items, error: itemsError } = await supabase
         .from('invoice_items')
@@ -47,31 +68,31 @@ export function ProductsReport() {
 
       if (itemsError) throw itemsError;
       if (!items) return [];
-      
+
       // Segunda query: obtener datos de inventory_items si hay item_ids
       const itemIds = items
         .map(i => i.item_id)
         .filter((id): id is string => id !== null);
-      
+
       let inventoryData: any[] = [];
       if (itemIds.length > 0) {
         const { data: inventory, error: invError } = await supabase
           .from('inventory_items')
           .select('id, name, category, cost_price, supplier_id, suppliers(name)')
           .in('id', itemIds);
-        
+
         if (!invError && inventory) {
           inventoryData = inventory;
         }
       }
-      
+
       // Combinar datos
       return items.map((item: any) => {
         const inventoryItem = inventoryData.find(inv => inv.id === item.item_id);
         const firstName = item.invoices?.patients?.first_name || '';
         const lastName = item.invoices?.patients?.last_name || '';
         const patientName = `${firstName} ${lastName}`.trim() || 'Sin paciente';
-        
+
         return {
           invoice_number: item.invoices.invoice_number,
           created_at: item.invoices.created_at,
@@ -91,13 +112,23 @@ export function ProductsReport() {
   });
 
   const { data: categories } = useQuery({
-    queryKey: ['product-categories'],
+    queryKey: ['product-categories', currentBranch?.id, isLocalMode],
     queryFn: async () => {
+      if (!currentBranch?.id) return [];
+
+      // Modo local: usar Tauri command
+      if (isLocalMode) {
+        const items = await invoke<any[]>('get_inventory_items', { branchId: currentBranch.id });
+        const uniqueCategories = [...new Set(items.filter(i => i.active !== false).map(item => item.category))];
+        return uniqueCategories.filter(Boolean);
+      }
+
+      // Modo online: Supabase
       const { data, error } = await supabase
         .from('inventory_items')
         .select('category')
         .eq('active', true);
-      
+
       if (error) throw error;
       const uniqueCategories = [...new Set(data.map(item => item.category))];
       return uniqueCategories;

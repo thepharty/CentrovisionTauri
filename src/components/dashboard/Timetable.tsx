@@ -14,6 +14,7 @@ import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 import { isTauri, saveAppointmentsToSqlite, getAppointmentsFromSqlite, AppointmentCache, getAppointments as getAppointmentsFromPostgres, getRoomsLocal, getDoctorsLocal } from '@/lib/dataSource';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { DndContext, DragEndEvent, DragOverlay, DragStartEvent, useDroppable, PointerSensor, TouchSensor, useSensor, useSensors } from '@dnd-kit/core';
 
 interface TimetableProps {
@@ -358,23 +359,11 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
         }) as unknown as Appointment[];
       };
 
-      // ===== OFFLINE DETECTION =====
-      // Usamos isOnline del contexto (que usa checkNetworkStatus de Tauri, no navigator.onLine)
-      // Si estamos offline, ir directo a SQLite
-      if (!isOnline && isTauri() && currentBranch?.id) {
-        console.log('[Timetable] Offline mode detected (isOnline=false) - loading from SQLite');
-        try {
-          return await loadFromSqlite();
-        } catch (err) {
-          console.error('[Timetable] Failed to load from SQLite:', err);
-          return [];
-        }
-      }
-
       // ===== LOCAL SERVER MODE (PostgreSQL) =====
-      // Cuando connectionMode es 'local', usar el servidor PostgreSQL local
-      if (connectionMode === 'local' && isTauri() && currentBranch?.id) {
-        console.log('[Timetable] Local mode - loading from PostgreSQL');
+      // Cuando connectionMode es 'local' u 'offline', usar PostgreSQL local
+      // (SQLite solo se usa como fallback si PostgreSQL falla)
+      if ((connectionMode === 'local' || connectionMode === 'offline') && isTauri() && currentBranch?.id) {
+        console.log('[Timetable] Local/Offline mode - loading from PostgreSQL');
         try {
           // Cargar citas de cada día del rango
           const allAppointments: Appointment[] = [];
@@ -523,9 +512,12 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
     },
   });
 
+  // Check if we're in local mode
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+
   // Query para schedule_blocks
   const { data: scheduleBlocks = [] } = useQuery({
-    queryKey: ['schedule_blocks', format(startDate, 'yyyy-MM-dd'), format(endDate, 'yyyy-MM-dd'), currentBranch?.id],
+    queryKey: ['schedule_blocks', format(startDate, 'yyyy-MM-dd'), format(endDate, 'yyyy-MM-dd'), currentBranch?.id, connectionMode],
     queryFn: async () => {
       const start = new Date(startDate);
       start.setHours(0, 0, 0, 0);
@@ -535,40 +527,49 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
       end.setHours(23, 59, 59, 999);
       const endUTC = fromClinicTime(end);
 
-    const { data, error } = await supabase
-      .from('schedule_blocks')
-      .select('*')
-      .eq('branch_id', currentBranch?.id)
-      .lt('starts_at', endUTC.toISOString())
-      .gt('ends_at', startUTC.toISOString())
-      .order('starts_at');
-
-    if (error) throw error;
-
-    // Obtener los perfiles de los creadores
-    if (data && data.length > 0) {
-      const creatorIds = [...new Set(data.map(block => block.created_by).filter(Boolean))];
-      
-      if (creatorIds.length > 0) {
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('user_id, full_name')
-          .in('user_id', creatorIds);
-        
-        const profilesMap = new Map(profiles?.map(p => [p.user_id, p]) || []);
-        
-        const blocksWithProfiles = data.map(block => ({
-          ...block,
-          created_by_profile: block.created_by ? profilesMap.get(block.created_by) : null
-        }));
-        
-        return blocksWithProfiles;
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[Timetable] Loading schedule_blocks from PostgreSQL local');
+        const blocks = await invoke<any[]>('get_schedule_blocks', {
+          branchId: currentBranch?.id,
+          startDate: startUTC.toISOString(),
+          endDate: endUTC.toISOString()
+        });
+        return blocks || [];
       }
-    }
 
-    return data || [];
+      // Modo Supabase
+      const { data, error } = await supabase
+        .from('schedule_blocks')
+        .select('*')
+        .eq('branch_id', currentBranch?.id)
+        .lt('starts_at', endUTC.toISOString())
+        .gt('ends_at', startUTC.toISOString())
+        .order('starts_at');
 
       if (error) throw error;
+
+      // Obtener los perfiles de los creadores
+      if (data && data.length > 0) {
+        const creatorIds = [...new Set(data.map(block => block.created_by).filter(Boolean))];
+
+        if (creatorIds.length > 0) {
+          const { data: profiles } = await supabase
+            .from('profiles')
+            .select('user_id, full_name')
+            .in('user_id', creatorIds);
+
+          const profilesMap = new Map(profiles?.map(p => [p.user_id, p]) || []);
+
+          const blocksWithProfiles = data.map(block => ({
+            ...block,
+            created_by_profile: block.created_by ? profilesMap.get(block.created_by) : null
+          }));
+
+          return blocksWithProfiles;
+        }
+      }
+
       return data || [];
     },
     enabled: isValidBranchId(currentBranch?.id) && !!format(startDate, 'yyyy-MM-dd') && !!format(endDate, 'yyyy-MM-dd'),
@@ -577,6 +578,31 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
 
   const updateAppointmentTimeMutation = useMutation({
     mutationFn: async ({ appointmentId, newStartTime }: { appointmentId: string; newStartTime: Date }) => {
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        // Obtener la cita actual para calcular duración
+        const appointments = await invoke<any[]>('get_appointments', {
+          branchId: null,
+          startDate: null,
+          endDate: null
+        });
+        const apt = appointments.find(a => a.id === appointmentId);
+        if (!apt) throw new Error('Cita no encontrada');
+
+        const duration = new Date(apt.ends_at).getTime() - new Date(apt.starts_at).getTime();
+        const newEndTime = new Date(newStartTime.getTime() + duration);
+
+        await invoke('update_appointment', {
+          appointment: {
+            id: appointmentId,
+            starts_at: newStartTime.toISOString(),
+            ends_at: newEndTime.toISOString(),
+          }
+        });
+        return;
+      }
+
+      // Modo Supabase
       const { data: apt } = await supabase
         .from('appointments')
         .select('starts_at, ends_at')

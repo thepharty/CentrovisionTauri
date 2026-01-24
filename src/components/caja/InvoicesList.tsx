@@ -12,6 +12,13 @@ import { toast } from 'sonner';
 import InvoiceDetailDialog from './InvoiceDetailDialog';
 import { useAuth } from '@/hooks/useAuth';
 import { useBranch } from '@/hooks/useBranch';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 
 export default function InvoicesList() {
   const { currentBranch } = useBranch();
@@ -23,15 +30,42 @@ export default function InvoicesList() {
   const [detailDialogOpen, setDetailDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [invoiceToDelete, setInvoiceToDelete] = useState<any>(null);
-  
+
   const queryClient = useQueryClient();
   const { hasRole } = useAuth();
+  const { connectionMode } = useNetworkStatus();
+
+  // Check if we should use local mode
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   const { data: invoices, isLoading } = useQuery({
-    queryKey: ['invoices', statusFilter, dateFrom, dateTo, currentBranch?.id],
+    queryKey: ['invoices', statusFilter, dateFrom, dateTo, currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!currentBranch?.id) return [];
-      
+
+      if (isLocalMode) {
+        // En modo local, usar el comando Tauri con fecha actual si no hay filtro
+        const today = new Date().toISOString().split('T')[0];
+        const dateToUse = dateFrom || today;
+
+        const data = await invoke<any[]>('get_invoices_by_branch_and_date', {
+          branchId: currentBranch.id,
+          date: dateToUse,
+        });
+
+        // Aplicar filtros client-side
+        let filtered = data || [];
+        if (statusFilter !== 'all') {
+          filtered = filtered.filter((inv) => inv.status === statusFilter);
+        }
+        if (dateTo) {
+          const endDate = new Date(dateTo);
+          endDate.setHours(23, 59, 59, 999);
+          filtered = filtered.filter((inv) => new Date(inv.created_at) <= endDate);
+        }
+        return filtered;
+      }
+
       let query = supabase
         .from('invoices')
         .select(`
@@ -104,6 +138,12 @@ export default function InvoicesList() {
 
   const deleteMutation = useMutation({
     mutationFn: async (invoiceId: string) => {
+      // En modo local, no permitir eliminar facturas
+      // Esta operación requiere conexión para garantizar integridad de datos
+      if (isLocalMode) {
+        throw new Error('Eliminar facturas requiere conexión a internet');
+      }
+
       // First, delete all invoice items
       const { error: itemsError } = await supabase
         .from('invoice_items')
@@ -127,7 +167,7 @@ export default function InvoicesList() {
       setDeleteDialogOpen(false);
       setInvoiceToDelete(null);
     },
-    onError: (error) => {
+    onError: (error: any) => {
       toast.error('Error al eliminar la factura: ' + error.message);
     },
   });

@@ -1,7 +1,13 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
@@ -12,11 +18,11 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
-import { 
-  Download, 
-  Database, 
-  HardDrive, 
-  FileArchive, 
+import {
+  Download,
+  Database,
+  HardDrive,
+  FileArchive,
   FileSpreadsheet,
   Loader2,
   CheckCircle,
@@ -30,7 +36,8 @@ import {
   Shield,
   CheckCircle2,
   SearchCheck,
-  Info
+  Info,
+  WifiOff
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import JSZip from 'jszip';
@@ -112,6 +119,9 @@ const IMPORT_ORDER = [
 ];
 
 export default function DataExporter() {
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+
   const [downloadingBucket, setDownloadingBucket] = useState<string | null>(null);
   const [bucketProgress, setBucketProgress] = useState(0);
   const [exportingTable, setExportingTable] = useState<string | null>(null);
@@ -135,10 +145,14 @@ export default function DataExporter() {
     setCheckedItems(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
-  // Fetch storage stats
+  // Fetch storage stats (only works online - requires Supabase storage)
   const { data: bucketStats = [] } = useQuery({
-    queryKey: ['storage-stats-export'],
+    queryKey: ['storage-stats-export', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        // Storage stats not available in local mode
+        return [] as BucketInfo[];
+      }
       const { data, error } = await supabase.rpc('get_storage_stats');
       if (error) throw error;
       return (data || []) as unknown as BucketInfo[];
@@ -204,12 +218,21 @@ export default function DataExporter() {
     { name: 'edge_function_settings', label: 'Config Edge Functions', category: 'Sistema' },
   ];
 
-  // Fetch table counts
+  // Fetch table counts (only works online - requires Supabase access)
   const { data: tableCounts = [] } = useQuery({
-    queryKey: ['table-counts-export'],
+    queryKey: ['table-counts-export', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        // Table counts not available in local mode for export
+        return tableDefinitions.map(def => ({
+          name: def.name,
+          label: def.label,
+          count: 0
+        })) as TableInfo[];
+      }
+
       const tables: TableInfo[] = [];
-      
+
       for (const def of tableDefinitions) {
         try {
           const { count } = await supabase.from(def.name as any).select('*', { count: 'exact', head: true });
@@ -218,7 +241,7 @@ export default function DataExporter() {
           tables.push({ name: def.name, label: def.label, count: 0 });
         }
       }
-      
+
       return tables;
     },
     refetchInterval: 60000,
@@ -2629,6 +2652,27 @@ CREATE POLICY "Usuarios pueden gestionar su lectura de actividad" ON crm_activit
   const totalFiles = bucketStats.reduce((acc, b) => acc + b.total_files, 0);
   const totalBytes = bucketStats.reduce((acc, b) => acc + b.total_bytes, 0);
   const totalRecords = tableCounts.reduce((acc, t) => acc + t.count, 0);
+
+  // Mostrar mensaje cuando está en modo offline
+  if (isLocalMode) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <FileArchive className="h-5 w-5" />
+            Exportación de Datos
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="py-12 text-center">
+          <WifiOff className="h-16 w-16 mx-auto mb-4 text-orange-500" />
+          <h3 className="text-lg font-semibold mb-2">Requiere conexión a internet</h3>
+          <p className="text-muted-foreground max-w-md mx-auto">
+            La exportación de datos requiere conexión a Supabase para acceder a todos los registros y archivos almacenados en la nube.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card>

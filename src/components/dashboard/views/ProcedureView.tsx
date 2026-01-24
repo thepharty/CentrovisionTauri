@@ -3,21 +3,49 @@ import { supabase } from '@/integrations/supabase/client';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+// Types for Tauri commands
+interface ProcedureLocal {
+  id: string;
+  encounter_id: string;
+  tipo_procedimiento: string | null;
+  ojo_operar: string | null;
+}
 
 interface ProcedureViewProps {
   encounterId: string;
 }
 
 export function ProcedureView({ encounterId }: ProcedureViewProps) {
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+
   const { data: procedure, isLoading } = useQuery({
-    queryKey: ['procedure-view', encounterId],
+    queryKey: ['procedure-view', encounterId, connectionMode],
     queryFn: async () => {
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[ProcedureView] Getting procedure from PostgreSQL local');
+        const procedures = await invoke<ProcedureLocal[]>('get_procedures_by_appointment', {
+          appointmentId: null,
+        });
+        return procedures.find(p => p.encounter_id === encounterId) || null;
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('procedures')
         .select('*')
         .eq('encounter_id', encounterId)
         .maybeSingle();
-      
+
       if (error) throw error;
       return data;
     },

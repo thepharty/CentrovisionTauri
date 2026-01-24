@@ -3,6 +3,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import { isTauri, getCRMPipelines as getCRMPipelinesLocal } from '@/lib/dataSource';
+import { invoke } from '@tauri-apps/api/core';
 
 export interface CRMPipeline {
   id: string;
@@ -156,9 +157,19 @@ export const useCRMPipelines = (branchId?: string, status?: string) => {
 };
 
 export const useCRMPipelineStages = (pipelineId: string) => {
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+
   return useQuery({
-    queryKey: ['crm-pipeline-stages', pipelineId],
+    queryKey: ['crm-pipeline-stages', pipelineId, connectionMode],
     queryFn: async () => {
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[useCRMPipelineStages] Loading from PostgreSQL local');
+        const stages = await invoke<CRMPipelineStage[]>('get_crm_pipeline_stages', { pipelineId });
+        return stages;
+      }
+
       // First get the stages
       const { data: stages, error } = await supabase
         .from('crm_pipeline_stages')
@@ -170,7 +181,7 @@ export const useCRMPipelineStages = (pipelineId: string) => {
 
       // Get unique updated_by user ids
       const updatedByIds = [...new Set(stages?.filter(s => s.updated_by).map(s => s.updated_by) || [])];
-      
+
       // Fetch profiles for those users
       let profilesMap: Record<string, string> = {};
       if (updatedByIds.length > 0) {
@@ -178,7 +189,7 @@ export const useCRMPipelineStages = (pipelineId: string) => {
           .from('profiles')
           .select('user_id, full_name')
           .in('user_id', updatedByIds);
-        
+
         profiles?.forEach(p => {
           profilesMap[p.user_id] = p.full_name || '';
         });
@@ -195,9 +206,19 @@ export const useCRMPipelineStages = (pipelineId: string) => {
 };
 
 export const useCRMPipelineNotes = (pipelineId: string) => {
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+
   return useQuery({
-    queryKey: ['crm-pipeline-notes', pipelineId],
+    queryKey: ['crm-pipeline-notes', pipelineId, connectionMode],
     queryFn: async () => {
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[useCRMPipelineNotes] Loading from PostgreSQL local');
+        const notes = await invoke<CRMPipelineNote[]>('get_crm_pipeline_notes', { pipelineId });
+        return notes;
+      }
+
       const { data, error } = await supabase
         .from('crm_pipeline_notes')
         .select('*')
@@ -213,17 +234,33 @@ export const useCRMPipelineNotes = (pipelineId: string) => {
 
 export const useCreatePipeline = () => {
   const queryClient = useQueryClient();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   return useMutation({
     mutationFn: async (data: CreatePipelineData) => {
-      const { data: { user } } = await supabase.auth.getUser();
-
       // Separate stages from the rest of the data (stages go to crm_pipeline_stages, not crm_pipelines)
       const { stages, ...pipelineData } = data;
 
       // Get the first stage name - default to 'info' if not provided
       const stagesFromData = stages || ['info', 'anticipo', 'pedido', 'ya_clinica', 'cirugia'];
       const firstStage = stagesFromData[0];
+
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[useCreatePipeline] Creating pipeline via PostgreSQL local');
+        const pipeline = await invoke<CRMPipeline>('create_crm_pipeline', {
+          pipeline: {
+            ...pipelineData,
+            current_stage: firstStage,
+            status: 'activo',
+            stages: stagesFromData,
+          }
+        });
+        return pipeline;
+      }
+
+      const { data: { user } } = await supabase.auth.getUser();
 
       // Create pipeline with explicit current_stage
       const { data: pipeline, error } = await supabase
@@ -265,6 +302,8 @@ export const useCreatePipeline = () => {
 
 export const useUpdatePipelineStage = () => {
   const queryClient = useQueryClient();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   return useMutation({
     mutationFn: async ({
@@ -278,6 +317,16 @@ export const useUpdatePipelineStage = () => {
       notes?: string;
       amount?: number;
     }) => {
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[useUpdatePipelineStage] Updating via PostgreSQL local');
+        await invoke('update_crm_pipeline_stage', {
+          id: pipelineId,
+          currentStage: newStage,
+        });
+        return { pipelineId, newStage };
+      }
+
       const { data: { user } } = await supabase.auth.getUser();
 
       // IMPORTANTE: Usar .select().single() para verificar que el UPDATE funcionó
@@ -385,9 +434,23 @@ export const useUpdatePipelineStage = () => {
 
 export const useAddPipelineNote = () => {
   const queryClient = useQueryClient();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   return useMutation({
     mutationFn: async ({ pipelineId, note }: { pipelineId: string; note: string }) => {
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[useAddPipelineNote] Creating note via PostgreSQL local');
+        const newNote = await invoke<CRMPipelineNote>('create_crm_pipeline_note', {
+          note: {
+            pipeline_id: pipelineId,
+            note,
+          }
+        });
+        return newNote;
+      }
+
       const { data: { user } } = await supabase.auth.getUser();
 
       const { data, error } = await supabase
@@ -416,9 +479,22 @@ export const useAddPipelineNote = () => {
 
 export const useCompletePipeline = () => {
   const queryClient = useQueryClient();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   return useMutation({
     mutationFn: async (pipelineId: string) => {
+      // En modo local, usar Tauri command para actualizar a etapa final
+      if (isLocalMode) {
+        console.log('[useCompletePipeline] Completing via PostgreSQL local');
+        // Actualizar el pipeline a la etapa final 'cirugia'
+        await invoke('update_crm_pipeline_stage', {
+          id: pipelineId,
+          currentStage: 'cirugia',
+        });
+        return pipelineId;
+      }
+
       const { error } = await supabase
         .from('crm_pipelines')
         .update({ status: 'completado', current_stage: 'cirugia' })
@@ -447,14 +523,22 @@ export const useCompletePipeline = () => {
 
 export const useCancelPipeline = () => {
   const queryClient = useQueryClient();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   return useMutation({
     mutationFn: async ({ pipelineId, reason }: { pipelineId: string; reason: string }) => {
+      // En modo local, mostrar mensaje - cancelar pipeline requiere conexión
+      // para garantizar la integridad de los datos
+      if (isLocalMode) {
+        throw new Error('Cancelar pipelines requiere conexión a internet para sincronizar correctamente');
+      }
+
       const { error } = await supabase
         .from('crm_pipelines')
-        .update({ 
+        .update({
           status: 'cancelado',
-          cancellation_reason: reason 
+          cancellation_reason: reason
         })
         .eq('id', pipelineId);
 
@@ -467,7 +551,7 @@ export const useCancelPipeline = () => {
     },
     onError: (error) => {
       console.error('Error cancelling pipeline:', error);
-      toast.error('Error al cancelar el pipeline');
+      toast.error(error instanceof Error ? error.message : 'Error al cancelar el pipeline');
     },
   });
 };

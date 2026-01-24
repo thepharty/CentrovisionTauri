@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -30,6 +32,11 @@ import {
 } from '@/components/ui/dialog';
 import { useBranch } from '@/hooks/useBranch';
 
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
 interface InventoryItemFormProps {
   item?: any;
   onClose: () => void;
@@ -38,6 +45,8 @@ interface InventoryItemFormProps {
 export default function InventoryItemForm({ item, onClose }: InventoryItemFormProps) {
   const queryClient = useQueryClient();
   const { currentBranch } = useBranch();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showSupplierDialog, setShowSupplierDialog] = useState(false);
   const [newSupplierName, setNewSupplierName] = useState('');
@@ -56,8 +65,11 @@ export default function InventoryItemForm({ item, onClose }: InventoryItemFormPr
 
   // Fetch suppliers
   const { data: suppliers } = useQuery({
-    queryKey: ['suppliers'],
+    queryKey: ['suppliers', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        return await invoke<any[]>('get_suppliers');
+      }
       const { data, error } = await supabase
         .from('suppliers')
         .select('*')
@@ -71,10 +83,10 @@ export default function InventoryItemForm({ item, onClose }: InventoryItemFormPr
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!formData.name) throw new Error('El nombre es requerido');
-      
+
       const unitPrice = Number(formData.unit_price);
       const costPrice = Number(formData.cost_price);
-      
+
       if (!unitPrice || unitPrice <= 0) throw new Error('El precio debe ser mayor a 0');
 
       const data = {
@@ -91,6 +103,15 @@ export default function InventoryItemForm({ item, onClose }: InventoryItemFormPr
         active: true,
         branch_id: currentBranch?.id || '',
       };
+
+      if (isLocalMode) {
+        if (item) {
+          await invoke('update_inventory_item', { id: item.id, updates: data });
+        } else {
+          await invoke('create_inventory_item', { item: data });
+        }
+        return;
+      }
 
       if (item) {
         // Update
@@ -119,6 +140,9 @@ export default function InventoryItemForm({ item, onClose }: InventoryItemFormPr
 
   const createSupplierMutation = useMutation({
     mutationFn: async (name: string) => {
+      if (isLocalMode) {
+        return await invoke<any>('create_supplier', { supplier: { name } });
+      }
       const { data, error } = await supabase
         .from('suppliers')
         .insert({ name })
@@ -142,39 +166,59 @@ export default function InventoryItemForm({ item, onClose }: InventoryItemFormPr
   const deleteMutation = useMutation({
     mutationFn: async () => {
       if (!item) return;
-      
+
+      if (isLocalMode) {
+        // En modo local, verificar movimientos con get_inventory_movements
+        const movements = await invoke<any[]>('get_inventory_movements', { branchId: currentBranch?.id || '', limit: 1 });
+        const hasMovements = movements.some(m => m.item_id === item.id);
+        if (hasMovements) {
+          throw new Error('No se puede eliminar: el producto tiene movimientos de inventario registrados');
+        }
+
+        // Verificar invoice_items - usamos get_invoice_items filtrando client-side
+        const invoiceItems = await invoke<any[]>('get_invoice_items', { invoiceId: '' }).catch(() => []);
+        const hasInvoiceItems = invoiceItems.some(ii => ii.item_id === item.id);
+        if (hasInvoiceItems) {
+          throw new Error('No se puede eliminar: el producto está incluido en facturas');
+        }
+
+        // Soft delete
+        await invoke('update_inventory_item', { id: item.id, updates: { active: false } });
+        return;
+      }
+
       // Verificar si el producto tiene movimientos de inventario
       const { data: movements, error: movError } = await supabase
         .from('inventory_movements')
         .select('id')
         .eq('item_id', item.id)
         .limit(1);
-      
+
       if (movError) throw movError;
-      
+
       if (movements && movements.length > 0) {
         throw new Error('No se puede eliminar: el producto tiene movimientos de inventario registrados');
       }
-      
+
       // Verificar si el producto está en facturas
       const { data: invoiceItems, error: invError } = await supabase
         .from('invoice_items')
         .select('id')
         .eq('item_id', item.id)
         .limit(1);
-      
+
       if (invError) throw invError;
-      
+
       if (invoiceItems && invoiceItems.length > 0) {
         throw new Error('No se puede eliminar: el producto está incluido en facturas');
       }
-      
+
       // Soft delete: marcar como inactivo
       const { error } = await supabase
         .from('inventory_items')
         .update({ active: false })
         .eq('id', item.id);
-      
+
       if (error) throw error;
     },
     onSuccess: () => {

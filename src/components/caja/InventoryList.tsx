@@ -4,6 +4,13 @@ import { supabase } from '@/integrations/supabase/client';
 import { jsPDF } from 'jspdf';
 import { useBranch } from '@/hooks/useBranch';
 import { useAuth } from '@/hooks/useAuth';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -32,6 +39,8 @@ export default function InventoryList({ showSecretButton = false }: InventoryLis
   const queryClient = useQueryClient();
   const { hasRole } = useAuth();
   const { currentBranch } = useBranch();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [supplierFilter, setSupplierFilter] = useState<string>('all');
@@ -45,8 +54,17 @@ export default function InventoryList({ showSecretButton = false }: InventoryLis
   const [showBulkImport, setShowBulkImport] = useState(false);
 
   const { data: suppliers } = useQuery({
-    queryKey: ['suppliers'],
+    queryKey: ['suppliers', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        // En modo local, usar el comando Tauri
+        const data = await invoke<any[]>('get_suppliers', {});
+        // Filtrar activos y ordenar
+        return (data || [])
+          .filter(s => s.active)
+          .sort((a, b) => a.name.localeCompare(b.name));
+      }
+
       const { data, error } = await supabase
         .from('suppliers')
         .select('*')
@@ -58,10 +76,40 @@ export default function InventoryList({ showSecretButton = false }: InventoryLis
   });
 
   const { data: items, isLoading } = useQuery({
-    queryKey: ['inventory-items', categoryFilter, supplierFilter, showLowStock, currentBranch?.id],
+    queryKey: ['inventory-items', categoryFilter, supplierFilter, showLowStock, currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!currentBranch?.id) return [];
-      
+
+      if (isLocalMode) {
+        // En modo local, usar el comando Tauri
+        const data = await invoke<any[]>('get_inventory_items', {
+          branchId: currentBranch.id,
+        });
+
+        // Aplicar filtros en cliente
+        let filtered = (data || []).filter(item => item.active);
+
+        if (categoryFilter !== 'all') {
+          filtered = filtered.filter(item => item.category === categoryFilter);
+        }
+
+        if (supplierFilter !== 'all') {
+          filtered = filtered.filter(item => item.supplier_id === supplierFilter);
+        }
+
+        if (showLowStock) {
+          filtered = filtered.filter(item => Number(item.current_stock) <= Number(item.min_stock || 0));
+        }
+
+        // Mapear supplier a suppliers para compatibilidad
+        return filtered
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map(item => ({
+            ...item,
+            suppliers: item.supplier ? { name: item.supplier.name } : null
+          }));
+      }
+
       let query = supabase
         .from('inventory_items')
         .select('*, suppliers(name)')
@@ -79,11 +127,11 @@ export default function InventoryList({ showSecretButton = false }: InventoryLis
 
       const { data, error } = await query;
       if (error) throw error;
-      
+
       if (showLowStock) {
         return data?.filter(item => Number(item.current_stock) <= Number(item.min_stock || 0)) || [];
       }
-      
+
       return data || [];
     },
   });
@@ -230,28 +278,43 @@ export default function InventoryList({ showSecretButton = false }: InventoryLis
 
     try {
       // 1. Registrar movimiento en inventory_movements
-      const { error } = await supabase
-        .from('inventory_movements')
-        .insert({
-          branch_id: currentBranch?.id || '',
-          item_id: selectedCourtesyItem.id,
-          movement_type: 'cortesia',
-          quantity: -courtesyQuantity,
-          notes: `Cortesía (x${courtesyQuantity}) - Autorizado por: ${authorizedBy}`,
-          reference_type: 'cortesia',
+      if (isLocalMode) {
+        // En modo local, usar Tauri command
+        console.log('[InventoryList] Creating courtesy movement via PostgreSQL local');
+        await invoke('create_inventory_movement', {
+          movement: {
+            branch_id: currentBranch?.id || '',
+            item_id: selectedCourtesyItem.id,
+            movement_type: 'cortesia',
+            quantity: -courtesyQuantity,
+            notes: `Cortesía (x${courtesyQuantity}) - Autorizado por: ${authorizedBy}`,
+            reference_type: 'cortesia',
+          }
         });
+      } else {
+        const { error } = await supabase
+          .from('inventory_movements')
+          .insert({
+            branch_id: currentBranch?.id || '',
+            item_id: selectedCourtesyItem.id,
+            movement_type: 'cortesia',
+            quantity: -courtesyQuantity,
+            notes: `Cortesía (x${courtesyQuantity}) - Autorizado por: ${authorizedBy}`,
+            reference_type: 'cortesia',
+          });
 
-      if (error) throw error;
+        if (error) throw error;
+      }
 
       // 2. Generar PDF de comprobante
       generateCourtesyPDF(selectedCourtesyItem, authorizedBy, courtesyQuantity);
 
       // 3. Mostrar éxito
       toast.success('Cortesía registrada exitosamente. Documento descargado.');
-      
+
       // 3.5. Invalidar query para actualizar la UI
       await queryClient.invalidateQueries({ queryKey: ['inventory-items'] });
-      
+
       // 4. Limpiar y cerrar
       setCourtesyDialogOpen(false);
       setAuthorizedBy('');

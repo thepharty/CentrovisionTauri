@@ -6,6 +6,32 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { FileImage } from 'lucide-react';
 import React from 'react';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+import { readFileAsDataUrl } from '@/lib/localStorageHelper';
+
+// Check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+// Types for Tauri commands
+interface SurgeryLocal {
+  id: string;
+  encounter_id: string;
+  tipo_cirugia: string | null;
+  ojo_operar: string | null;
+  nota_operatoria: string | null;
+  medicacion: string | null;
+  surgery_files?: SurgeryFileLocal[];
+}
+
+interface SurgeryFileLocal {
+  id: string;
+  surgery_id: string;
+  file_path: string;
+  mime_type: string | null;
+}
 
 interface SurgeryViewProps {
   encounterId: string;
@@ -13,16 +39,36 @@ interface SurgeryViewProps {
 
 export function SurgeryView({ encounterId }: SurgeryViewProps) {
   const [filesWithUrls, setFilesWithUrls] = React.useState<Array<{ id: string; url: string; mime_type: string }>>([]);
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   const { data: surgery, isLoading } = useQuery({
-    queryKey: ['surgery-view', encounterId],
+    queryKey: ['surgery-view', encounterId, connectionMode],
     queryFn: async () => {
+      // En modo local, usar Tauri command con archivos
+      if (isLocalMode) {
+        console.log('[SurgeryView] Getting surgery from PostgreSQL local');
+        // Primero obtener el encounter para obtener el appointment_id
+        const encounter = await invoke<any>('get_encounter_by_id', { encounterId });
+        if (!encounter?.appointment_id) {
+          console.log('[SurgeryView] No appointment_id found in encounter');
+          return null;
+        }
+
+        const surgeries = await invoke<SurgeryLocal[]>('get_surgeries_by_appointment', {
+          appointmentId: encounter.appointment_id,
+        });
+        const surgery = surgeries.find(s => s.encounter_id === encounterId);
+        return surgery || null;
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('surgeries')
         .select('*, surgery_files(*)')
         .eq('encounter_id', encounterId)
         .maybeSingle();
-      
+
       if (error) throw error;
       return data;
     },
@@ -31,9 +77,39 @@ export function SurgeryView({ encounterId }: SurgeryViewProps) {
   // Generar URLs firmadas para los archivos
   React.useEffect(() => {
     const generateUrls = async () => {
-      if (!surgery?.surgery_files || surgery.surgery_files.length === 0) return;
-      
-      const filesWithUrls = await Promise.all(
+      if (!surgery?.surgery_files || surgery.surgery_files.length === 0) {
+        setFilesWithUrls([]);
+        return;
+      }
+
+      // En modo local, usar readFileAsDataUrl para obtener archivos locales
+      if (isLocalMode) {
+        console.log('[SurgeryView] Loading files from local SMB storage');
+        const filesWithLocalUrls = await Promise.all(
+          surgery.surgery_files.map(async (file: any) => {
+            try {
+              const dataUrl = await readFileAsDataUrl('surgeries', file.file_path);
+              return {
+                id: file.id,
+                url: dataUrl || '',
+                mime_type: file.mime_type || ''
+              };
+            } catch (error) {
+              console.error('[SurgeryView] Error loading local file:', file.file_path, error);
+              return {
+                id: file.id,
+                url: '',
+                mime_type: file.mime_type || ''
+              };
+            }
+          })
+        );
+        setFilesWithUrls(filesWithLocalUrls.filter(f => f.url));
+        return;
+      }
+
+      // Modo Supabase - usar URLs firmadas
+      const filesWithSignedUrls = await Promise.all(
         surgery.surgery_files.map(async (file: any) => {
           const { data } = await supabase.storage
             .from('surgeries')
@@ -45,10 +121,10 @@ export function SurgeryView({ encounterId }: SurgeryViewProps) {
           };
         })
       );
-      setFilesWithUrls(filesWithUrls);
+      setFilesWithUrls(filesWithSignedUrls);
     };
     generateUrls();
-  }, [surgery]);
+  }, [surgery, isLocalMode]);
 
   if (isLoading) {
     return (

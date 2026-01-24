@@ -3,6 +3,76 @@ import { supabase } from '@/integrations/supabase/client';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+// Types for Tauri commands
+interface EncounterLocal {
+  id: string;
+  patient_id: string;
+  type: string;
+  doctor_id: string | null;
+  appointment_id: string | null;
+  date: string;
+  motivo_consulta: string | null;
+  summary: string | null;
+  plan_tratamiento: string | null;
+  cirugias: string | null;
+  estudios: string | null;
+  proxima_cita: string | null;
+  excursiones_od: string | null;
+  excursiones_os: string | null;
+}
+
+interface PatientLocal {
+  id: string;
+  first_name: string;
+  last_name: string;
+  diabetes: boolean | null;
+  hta: boolean | null;
+  allergies: string | null;
+  notes: string | null;
+  ophthalmic_history: string | null;
+}
+
+interface ExamEyeLocal {
+  id: string;
+  encounter_id: string;
+  side: string;
+  av_sc: string | null;
+  av_cc: string | null;
+  ref_subj_sphere: number | null;
+  ref_subj_cyl: number | null;
+  ref_subj_axis: number | null;
+  ref_subj_av: string | null;
+  rx_sphere: number | null;
+  rx_cyl: number | null;
+  rx_axis: number | null;
+  rx_add: number | null;
+  slit_lamp: string | null;
+  iop: number | null;
+  plan: string | null;
+  prescription_notes: string | null;
+}
+
+interface AppointmentLocal {
+  id: string;
+  autorefractor: string | null;
+  lensometry: string | null;
+  keratometry_od_k1: string | null;
+  keratometry_od_k2: string | null;
+  keratometry_od_axis: string | null;
+  keratometry_os_k1: string | null;
+  keratometry_os_k2: string | null;
+  keratometry_os_axis: string | null;
+  pio_od: number | null;
+  pio_os: number | null;
+}
 
 interface ConsultationViewProps {
   encounterId: string;
@@ -11,10 +81,23 @@ interface ConsultationViewProps {
 }
 
 export function ConsultationView({ encounterId, additionalSectionsAfterDiagnosis, hideDiagnosisPrevio }: ConsultationViewProps) {
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+
   // Fetch encounter data
   const { data: encounter, isLoading: encounterLoading } = useQuery({
-    queryKey: ['consultation-encounter', encounterId],
+    queryKey: ['consultation-encounter', encounterId, connectionMode],
     queryFn: async () => {
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[ConsultationView] Getting encounter from PostgreSQL local');
+        const data = await invoke<EncounterLocal | null>('get_encounter_by_id', {
+          encounterId: encounterId,
+        });
+        return data;
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('encounters')
         .select('*')
@@ -28,10 +111,26 @@ export function ConsultationView({ encounterId, additionalSectionsAfterDiagnosis
 
   // Fetch previous encounter diagnosis
   const { data: previousEncounter } = useQuery({
-    queryKey: ['previous-encounter', encounter?.patient_id],
+    queryKey: ['previous-encounter', encounter?.patient_id, connectionMode],
     queryFn: async () => {
       if (!encounter?.patient_id) return null;
-      
+
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[ConsultationView] Getting previous encounter from PostgreSQL local');
+        const encounters = await invoke<EncounterLocal[]>('get_encounters_by_patient', {
+          patientId: encounter.patient_id,
+        });
+        // Filter to get the most recent one before current encounter
+        const currentDate = encounter.date || new Date().toISOString();
+        const previous = encounters
+          .filter(e => e.date && e.date < currentDate)
+          .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+          [0];
+        return previous ? { summary: previous.summary, date: previous.date } : null;
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('encounters')
         .select('summary, date')
@@ -49,9 +148,20 @@ export function ConsultationView({ encounterId, additionalSectionsAfterDiagnosis
 
   // Fetch patient data
   const { data: patient } = useQuery({
-    queryKey: ['consultation-patient', encounter?.patient_id],
+    queryKey: ['consultation-patient', encounter?.patient_id, connectionMode],
     queryFn: async () => {
       if (!encounter?.patient_id) return null;
+
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[ConsultationView] Getting patient from PostgreSQL local');
+        const data = await invoke<PatientLocal | null>('get_patient_by_id', {
+          patientId: encounter.patient_id,
+        });
+        return data;
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('patients')
         .select('*')
@@ -65,8 +175,20 @@ export function ConsultationView({ encounterId, additionalSectionsAfterDiagnosis
 
   // Fetch exam_eye data for both eyes
   const { data: examEyes } = useQuery({
-    queryKey: ['consultation-exam-eyes', encounterId],
+    queryKey: ['consultation-exam-eyes', encounterId, connectionMode],
     queryFn: async () => {
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[ConsultationView] Getting exam eyes from PostgreSQL local');
+        const data = await invoke<ExamEyeLocal[]>('get_exam_eyes_by_encounter', {
+          encounterId: encounterId,
+        });
+        const od = data?.find(e => e.side === 'OD');
+        const os = data?.find(e => e.side === 'OI');
+        return { od, os };
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('exam_eye')
         .select('*')
@@ -81,9 +203,22 @@ export function ConsultationView({ encounterId, additionalSectionsAfterDiagnosis
 
   // Fetch appointment data
   const { data: appointment } = useQuery({
-    queryKey: ['consultation-appointment', encounter?.appointment_id],
+    queryKey: ['consultation-appointment', encounter?.appointment_id, connectionMode],
     queryFn: async () => {
       if (!encounter?.appointment_id) return null;
+
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[ConsultationView] Getting appointment from PostgreSQL local');
+        const appointments = await invoke<AppointmentLocal[]>('get_appointments', {
+          startDate: null,
+          endDate: null,
+          branchId: null,
+        });
+        return appointments.find(a => a.id === encounter.appointment_id) || null;
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('appointments')
         .select('*')

@@ -1,6 +1,13 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { useNetworkStatus } from './useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 
 interface Branch {
   id: string;
@@ -52,11 +59,22 @@ const applyBranchTheme = (branch: Branch | null) => {
 export const BranchProvider = ({ children }: { children: ReactNode }) => {
   const [currentBranch, setCurrentBranchState] = useState<Branch | null>(null);
   const queryClient = useQueryClient();
+  const { connectionMode } = useNetworkStatus();
+
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   // Fetch all active branches
   const { data: branches = [], isLoading } = useQuery({
-    queryKey: ['branches'],
+    queryKey: ['branches', connectionMode],
     queryFn: async () => {
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[useBranch] Getting branches from PostgreSQL local');
+        const data = await invoke<Branch[]>('get_branches', {});
+        return data.filter(b => b.active).sort((a, b) => a.code.localeCompare(b.code));
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('branches')
         .select('*')

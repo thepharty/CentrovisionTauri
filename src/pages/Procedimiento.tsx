@@ -20,11 +20,96 @@ import { toast } from 'sonner';
 import React from 'react';
 import { usePrintPDF } from '@/hooks/usePrintPDF';
 import { PrintPreviewDialog } from '@/components/dashboard/PrintPreviewDialog';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+// Types for Tauri commands
+interface EncounterLocal {
+  id: string;
+  patient_id: string;
+  type: string;
+  doctor_id: string | null;
+  appointment_id: string | null;
+  date: string;
+  summary: string | null;
+  plan_tratamiento: string | null;
+  proxima_cita: string | null;
+  motivo_consulta: string | null;
+}
+
+interface PatientLocal {
+  id: string;
+  code: string | null;
+  first_name: string;
+  last_name: string;
+  dob: string | null;
+  diabetes: boolean | null;
+  hta: boolean | null;
+  allergies: string | null;
+  notes: string | null;
+  ophthalmic_history: string | null;
+}
+
+interface ProfileLocal {
+  user_id: string;
+  full_name: string | null;
+  specialty: string | null;
+  gender?: string;
+}
+
+interface AppointmentLocal {
+  id: string;
+  patient_id: string;
+  type: string;
+  reason: string | null;
+  starts_at: string;
+  status: string;
+}
+
+interface StudyLocal {
+  id: string;
+  patient_id: string;
+  appointment_id: string | null;
+  title: string;
+  eye_side: string;
+  comments: string | null;
+  created_at: string;
+}
+
+interface SurgeryLocal {
+  id: string;
+  encounter_id: string;
+  tipo_cirugia: string | null;
+  ojo_operar: string | null;
+}
+
+interface ProcedureLocal {
+  id: string;
+  encounter_id: string;
+  tipo_procedimiento: string | null;
+  ojo_operar: string | null;
+  medicacion: string | null;
+  consentimiento_informado: boolean | null;
+}
+
+interface DiagnosisLocal {
+  id: string;
+  encounter_id: string;
+  label: string;
+  code: string | null;
+}
 
 export default function Surgery() {
   const { encounterId } = useParams<{ encounterId: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   // Estados principales - simplificados según estructura de DB
   const [tipoProcedimiento, setTipoProcedimiento] = React.useState('');
@@ -62,8 +147,23 @@ export default function Surgery() {
   const { generatePDF, htmlContent, clearContent } = usePrintPDF();
 
   const { data: encounter, isLoading } = useQuery({
-    queryKey: ['encounter', encounterId],
+    queryKey: ['encounter', encounterId, connectionMode],
     queryFn: async () => {
+      // En modo local, usar Tauri commands
+      if (isLocalMode) {
+        console.log('[Procedimiento] Getting encounter from PostgreSQL local');
+        const enc = await invoke<EncounterLocal | null>('get_encounter_by_id', { encounterId });
+        if (!enc) return null;
+
+        const patient = await invoke<PatientLocal | null>('get_patient_by_id', { patientId: enc.patient_id });
+        let doctor = null;
+        if (enc.doctor_id) {
+          doctor = await invoke<ProfileLocal | null>('get_profile_by_user_id', { userId: enc.doctor_id });
+        }
+        return { ...enc, patient, doctor } as Encounter;
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('encounters')
         .select(`
@@ -75,14 +175,13 @@ export default function Surgery() {
 
       if (error) throw error;
 
-      // Fetch doctor info separately if exists
       if (data.doctor_id) {
         const { data: doctor } = await supabase
           .from('profiles')
           .select('*')
           .eq('user_id', data.doctor_id)
           .single();
-        
+
         return { ...data, doctor } as Encounter;
       }
 
@@ -95,10 +194,18 @@ export default function Surgery() {
 
   // Buscar el appointment asociado para obtener el tipo de procedimiento
   const { data: appointment } = useQuery({
-    queryKey: ['appointment', encounter?.appointment_id],
+    queryKey: ['appointment', encounter?.appointment_id, connectionMode],
     queryFn: async () => {
       if (!encounter?.appointment_id) return null;
-      
+
+      if (isLocalMode) {
+        console.log('[Procedimiento] Getting appointment from PostgreSQL local');
+        const appointments = await invoke<AppointmentLocal[]>('get_appointments', {
+          startDate: null, endDate: null, branchId: null,
+        });
+        return appointments.find(a => a.id === encounter.appointment_id) || null;
+      }
+
       const { data, error } = await supabase
         .from('appointments')
         .select('*')
@@ -113,10 +220,39 @@ export default function Surgery() {
 
   // Get all previous encounters for sidebar (excluding surgeries)
   const { data: previousEncounters } = useQuery({
-    queryKey: ['previous-encounters-list', encounter?.patient_id, encounterId],
+    queryKey: ['previous-encounters-list', encounter?.patient_id, encounterId, connectionMode],
     queryFn: async () => {
       if (!encounter?.patient_id) return [];
-      
+
+      if (isLocalMode) {
+        console.log('[Procedimiento] Getting previous encounters from PostgreSQL local');
+        const encounters = await invoke<EncounterLocal[]>('get_encounters_by_patient', {
+          patientId: encounter.patient_id,
+        });
+        const filtered = encounters.filter(e => e.id !== encounterId)
+          .sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 10);
+
+        const allAppointments = await invoke<AppointmentLocal[]>('get_appointments', {
+          startDate: null, endDate: null, branchId: null,
+        });
+
+        const encountersWithTypes = await Promise.all(
+          filtered.map(async (enc) => {
+            const appt = allAppointments.find(a => a.id === enc.appointment_id);
+            let studyData = null;
+            if (appt?.type === 'estudio' && enc.appointment_id) {
+              const studies = await invoke<StudyLocal[]>('get_studies_by_appointment', { appointmentId: enc.appointment_id });
+              studyData = studies[0];
+            }
+            return { ...enc, appointments: appt ? [{ type: appt.type }] : [], studyTitle: studyData?.title || null, studyEyeSide: studyData?.eye_side || null };
+          })
+        );
+        return encountersWithTypes.filter(enc => {
+          const t = enc.appointments?.[0]?.type;
+          return t !== 'cirugia' && t !== 'procedimiento' && t !== 'estudio';
+        });
+      }
+
       const { data: encounters, error } = await supabase
         .from('encounters')
         .select('id, date, type, summary, appointment_id')
@@ -126,12 +262,10 @@ export default function Surgery() {
         .limit(10);
 
       if (error) throw error;
-      
-      // For each encounter, fetch the related appointment and filter out surgeries
+
       if (encounters) {
         const encountersWithAppointments = await Promise.all(
           encounters.map(async (enc) => {
-            // Use appointment_id directly instead of searching by date
             if (enc.appointment_id) {
               const { data: appointment } = await supabase
                 .from('appointments')
@@ -139,7 +273,6 @@ export default function Surgery() {
                 .eq('id', enc.appointment_id)
                 .maybeSingle();
 
-              // Si es un estudio, buscar título y ojo
               let studyData = null;
               if (appointment?.type === 'estudio') {
                 const { data: study } = await supabase
@@ -147,7 +280,6 @@ export default function Surgery() {
                   .select('title, eye_side')
                   .eq('appointment_id', enc.appointment_id)
                   .maybeSingle();
-                
                 studyData = study;
               }
 
@@ -158,23 +290,18 @@ export default function Surgery() {
                 studyEyeSide: studyData?.eye_side || null
               };
             }
-
-            return {
-              ...enc,
-              appointments: []
-            };
+            return { ...enc, appointments: [] };
           })
         );
-        
-        // Filter out surgeries, procedures AND estudios
+
         return encountersWithAppointments.filter(enc => {
           const appointmentType = enc.appointments?.[0]?.type;
-          return appointmentType !== 'cirugia' 
+          return appointmentType !== 'cirugia'
               && appointmentType !== 'procedimiento'
               && appointmentType !== 'estudio';
         });
       }
-      
+
       return [];
     },
     enabled: !!encounter?.patient_id,
@@ -182,10 +309,16 @@ export default function Surgery() {
 
   // Get studies for sidebar
   const { data: patientStudies } = useQuery({
-    queryKey: ['patient-studies-list', encounter?.patient_id],
+    queryKey: ['patient-studies-list', encounter?.patient_id, connectionMode],
     queryFn: async () => {
       if (!encounter?.patient_id) return [];
-      
+
+      if (isLocalMode) {
+        console.log('[Procedimiento] Getting patient studies from PostgreSQL local');
+        const studies = await invoke<StudyLocal[]>('get_studies_by_patient', { patientId: encounter.patient_id });
+        return studies.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '')).slice(0, 10);
+      }
+
       const { data: studies, error } = await supabase
         .from('studies')
         .select('id, title, eye_side, created_at, comments, appointment_id')
@@ -201,10 +334,43 @@ export default function Surgery() {
 
   // Get surgeries and procedures (appointments of type cirugia or procedimiento)
   const { data: surgeries } = useQuery({
-    queryKey: ['surgeries-list', encounter?.patient_id, encounterId],
+    queryKey: ['surgeries-list', encounter?.patient_id, encounterId, connectionMode],
     queryFn: async () => {
       if (!encounter?.patient_id) return [];
-      
+
+      if (isLocalMode) {
+        console.log('[Procedimiento] Getting surgeries list from PostgreSQL local');
+        const allAppointments = await invoke<AppointmentLocal[]>('get_appointments', {
+          startDate: null, endDate: null, branchId: null,
+        });
+        const surgicalAppointments = allAppointments
+          .filter(a => a.patient_id === encounter.patient_id && ['cirugia', 'procedimiento'].includes(a.type))
+          .sort((a, b) => (b.starts_at || '').localeCompare(a.starts_at || ''));
+
+        if (surgicalAppointments.length === 0) return [];
+
+        const allEncounters = await invoke<EncounterLocal[]>('get_encounters_by_patient', { patientId: encounter.patient_id });
+        const appointmentIds = surgicalAppointments.map(a => a.id);
+        const surgicalEncounters = allEncounters
+          .filter(e => e.appointment_id && appointmentIds.includes(e.appointment_id) && e.id !== encounterId)
+          .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+        const surgeriesData = await invoke<SurgeryLocal[]>('get_surgeries_by_patient', { patientId: encounter.patient_id });
+        const proceduresData = await invoke<ProcedureLocal[]>('get_procedures_by_patient', { patientId: encounter.patient_id });
+
+        return surgicalEncounters.map(enc => {
+          const relatedAppointment = surgicalAppointments.find(a => a.id === enc.appointment_id);
+          const surgeryData = surgeriesData.find(s => s.encounter_id === enc.id);
+          const procedureData = proceduresData.find(p => p.encounter_id === enc.id);
+          return {
+            ...enc,
+            appointments: relatedAppointment ? [{ type: relatedAppointment.type }] : [],
+            surgery: surgeryData ? { tipo_cirugia: surgeryData.tipo_cirugia, ojo_operar: surgeryData.ojo_operar } : null,
+            procedure: procedureData ? { tipo_procedimiento: procedureData.tipo_procedimiento, ojo_operar: procedureData.ojo_operar } : null,
+          };
+        });
+      }
+
       // 1. Buscar appointments de tipo cirugia o procedimiento
       const { data: surgicalAppointments, error: apptError } = await supabase
         .from('appointments')
@@ -226,29 +392,23 @@ export default function Surgery() {
         .order('date', { ascending: false });
 
       if (encError) throw encError;
-      
+
       // 3. Buscar datos de cirugía y procedimiento para cada encounter
       if (encounters) {
         const encountersWithSurgeryData = await Promise.all(
           encounters.map(async (enc) => {
-            const relatedAppointment = surgicalAppointments.find(
-              a => a.id === enc.appointment_id
-            );
-            
-            // Fetch surgery data from surgeries table
+            const relatedAppointment = surgicalAppointments.find(a => a.id === enc.appointment_id);
             const { data: surgeryData } = await supabase
               .from('surgeries')
               .select('tipo_cirugia, ojo_operar')
               .eq('encounter_id', enc.id)
               .maybeSingle();
-            
-            // Fetch procedure data from procedures table
             const { data: procedureData } = await supabase
               .from('procedures')
               .select('tipo_procedimiento, ojo_operar')
               .eq('encounter_id', enc.id)
               .maybeSingle();
-            
+
             return {
               ...enc,
               appointments: relatedAppointment ? [{ type: relatedAppointment.type }] : [],
@@ -259,7 +419,7 @@ export default function Surgery() {
         );
         return encountersWithSurgeryData;
       }
-      
+
       return [];
     },
     enabled: !!encounter?.patient_id,
@@ -276,16 +436,23 @@ export default function Surgery() {
 
   // Cargar datos del procedimiento desde la tabla procedures
   const { data: procedure } = useQuery({
-    queryKey: ['procedure', encounterId],
+    queryKey: ['procedure', encounterId, connectionMode],
     queryFn: async () => {
       if (!encounterId) return null;
-      
+
+      if (isLocalMode) {
+        console.log('[Procedimiento] Getting procedure data from PostgreSQL local');
+        if (!encounter?.patient_id) return null;
+        const procedures = await invoke<ProcedureLocal[]>('get_procedures_by_patient', { patientId: encounter.patient_id });
+        return procedures.find(p => p.encounter_id === encounterId) || null;
+      }
+
       const { data, error } = await supabase
         .from('procedures')
         .select('*')
         .eq('encounter_id', encounterId)
         .maybeSingle();
-      
+
       if (error) throw error;
       return data;
     },
@@ -345,10 +512,39 @@ export default function Surgery() {
 
   // Get selected encounter details
   const { data: selectedEncounter } = useQuery({
-    queryKey: ['selected-encounter', selectedEncounterId],
+    queryKey: ['selected-encounter', selectedEncounterId, connectionMode],
     queryFn: async () => {
       if (!selectedEncounterId) return null;
-      
+
+      if (isLocalMode) {
+        console.log('[Procedimiento] Getting selected encounter from PostgreSQL local');
+        const enc = await invoke<EncounterLocal | null>('get_encounter_by_id', { encounterId: selectedEncounterId });
+        if (!enc) return null;
+
+        const patient = await invoke<PatientLocal | null>('get_patient_by_id', { patientId: enc.patient_id });
+        const examEyes = await invoke<any[]>('get_exam_eyes_by_encounter', { encounterId: selectedEncounterId });
+        const diagnoses = await invoke<DiagnosisLocal[]>('get_diagnoses_by_encounter', { encounterId: selectedEncounterId });
+
+        let appointment = null;
+        if (enc.appointment_id) {
+          const allAppointments = await invoke<AppointmentLocal[]>('get_appointments', { startDate: null, endDate: null, branchId: null });
+          appointment = allAppointments.find(a => a.id === enc.appointment_id) || null;
+        }
+
+        const surgeries = enc.patient_id ? await invoke<SurgeryLocal[]>('get_surgeries_by_patient', { patientId: enc.patient_id }) : [];
+        const surgery = surgeries.find(s => s.encounter_id === selectedEncounterId) || null;
+
+        const procedures = enc.patient_id ? await invoke<ProcedureLocal[]>('get_procedures_by_patient', { patientId: enc.patient_id }) : [];
+        const procedure = procedures.find(p => p.encounter_id === selectedEncounterId) || null;
+
+        let doctor = null;
+        if (enc.doctor_id) {
+          doctor = await invoke<ProfileLocal | null>('get_profile_by_user_id', { userId: enc.doctor_id });
+        }
+
+        return { ...enc, patient, exam_eye: examEyes, diagnoses, appointment, surgery, procedure, doctor };
+      }
+
       const { data, error } = await supabase
         .from('encounters')
         .select(`
@@ -361,8 +557,7 @@ export default function Surgery() {
         .maybeSingle();
 
       if (error) throw error;
-      
-      // Fetch appointment and surgery data
+
       if (data) {
         const encounterDate = new Date(data.date);
         const startOfDay = new Date(encounterDate);
@@ -379,21 +574,18 @@ export default function Surgery() {
           .limit(1)
           .maybeSingle();
 
-        // Fetch surgery data if exists
         const { data: surgery } = await supabase
           .from('surgeries')
           .select('*')
           .eq('encounter_id', selectedEncounterId)
           .maybeSingle();
 
-        // Fetch procedure data if exists
         const { data: procedure } = await supabase
           .from('procedures')
           .select('*')
           .eq('encounter_id', selectedEncounterId)
           .maybeSingle();
 
-        // Fetch doctor info if exists
         let doctor = null;
         if (data.doctor_id) {
           const { data: doctorData } = await supabase
@@ -406,7 +598,7 @@ export default function Surgery() {
 
         return { ...data, appointment, surgery, procedure, doctor };
       }
-      
+
       return data;
     },
     enabled: !!selectedEncounterId,
@@ -471,6 +663,80 @@ export default function Surgery() {
     mutationFn: async () => {
       if (!encounterId) return;
 
+      if (isLocalMode) {
+        console.log('[Procedimiento] Saving procedure data with PostgreSQL local');
+
+        // 1. Actualizar encounter
+        await invoke('update_encounter', {
+          id: encounterId,
+          updates: {
+            summary: diagnosticoPreoperatorio,
+            plan_tratamiento: planQuirurgico,
+            proxima_cita: proximaCita,
+            motivo_consulta: `Procedimiento: ${tipoProcedimiento}`,
+          },
+        });
+
+        // 2. Actualizar antecedentes del paciente
+        if (patient?.id) {
+          await invoke('update_patient', {
+            id: patient.id,
+            updates: {
+              diabetes,
+              hta,
+              allergies: alergia ? alergiaText : null,
+              notes: antecedentesGenerales,
+              ophthalmic_history: antecedentesOftalmologicos,
+            },
+          });
+        }
+
+        // 3. Guardar/actualizar en tabla procedures
+        const existingProcedures = patient?.id
+          ? await invoke<ProcedureLocal[]>('get_procedures_by_patient', { patientId: patient.id })
+          : [];
+        const existingProcedure = existingProcedures.find(p => p.encounter_id === encounterId);
+
+        if (existingProcedure) {
+          await invoke('update_procedure', {
+            id: existingProcedure.id,
+            updates: {
+              tipo_procedimiento: tipoProcedimiento,
+              ojo_operar: ojoOperar,
+              consentimiento_informado: consentimientoInformado,
+              medicacion: medicacion,
+            },
+          });
+        } else {
+          await invoke('create_procedure', {
+            procedure: {
+              encounter_id: encounterId,
+              tipo_procedimiento: tipoProcedimiento,
+              ojo_operar: ojoOperar,
+              consentimiento_informado: consentimientoInformado,
+              medicacion: medicacion,
+            },
+          });
+        }
+
+        // 4. Guardar diagnóstico si no existe
+        if (diagnosticoPreoperatorio.trim()) {
+          const existingDiagnoses = await invoke<DiagnosisLocal[]>('get_diagnoses_by_encounter', { encounterId });
+          if (existingDiagnoses.length === 0) {
+            await invoke('create_diagnosis', {
+              diagnosis: {
+                encounter_id: encounterId,
+                label: diagnosticoPreoperatorio,
+                code: null,
+              },
+            });
+          }
+        }
+
+        return;
+      }
+
+      // Modo Supabase
       // 1. Actualizar encounter con diagnóstico, plan y próxima cita
       const { error: encounterError } = await supabase
         .from('encounters')
@@ -574,21 +840,28 @@ export default function Surgery() {
 
   const handleFinishSurgery = async () => {
     await saveMutation.mutateAsync();
-    
+
     // Marcar la cita como completada - usar appointment_id del encounter como fallback
     const appointmentIdToUpdate = appointment?.id || encounter?.appointment_id;
-    
+
     if (appointmentIdToUpdate) {
-      const { error } = await supabase
-        .from('appointments')
-        .update({ status: 'done' })
-        .eq('id', appointmentIdToUpdate);
-      
-      if (error) {
-        console.error('Error al marcar cita como atendida:', error);
-        toast.warning('Procedimiento guardado, pero hubo un error al marcar la cita como atendida');
-        navigate('/dashboard');
-        return;
+      if (isLocalMode) {
+        await invoke('update_appointment', {
+          id: appointmentIdToUpdate,
+          updates: { status: 'done' },
+        });
+      } else {
+        const { error } = await supabase
+          .from('appointments')
+          .update({ status: 'done' })
+          .eq('id', appointmentIdToUpdate);
+
+        if (error) {
+          console.error('Error al marcar cita como atendida:', error);
+          toast.warning('Procedimiento guardado, pero hubo un error al marcar la cita como atendida');
+          navigate('/dashboard');
+          return;
+        }
       }
     } else {
       console.warn('No se encontró appointment_id para marcar como atendida');
@@ -596,7 +869,7 @@ export default function Surgery() {
 
     // Invalidar cache para que el dashboard refleje el cambio
     queryClient.invalidateQueries({ queryKey: ['appointments'] });
-    
+
     toast.success('Procedimiento finalizado exitosamente');
     navigate('/dashboard');
   };

@@ -1,6 +1,8 @@
 import { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
 import { useBranch } from '@/hooks/useBranch';
 import {
   Dialog,
@@ -61,9 +63,16 @@ interface BulkImportDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
 export default function BulkImportDialog({ open, onOpenChange }: BulkImportDialogProps) {
   const queryClient = useQueryClient();
   const { currentBranch } = useBranch();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const fileInputRef = useRef<HTMLInputElement>(null);
   
   const [isProcessing, setIsProcessing] = useState(false);
@@ -75,8 +84,12 @@ export default function BulkImportDialog({ open, onOpenChange }: BulkImportDialo
 
   // Fetch suppliers for validation
   const { data: suppliers = [] } = useQuery({
-    queryKey: ['suppliers'],
+    queryKey: ['suppliers', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const data = await invoke<any[]>('get_suppliers');
+        return (data || []).filter(s => s.active);
+      }
       const { data, error } = await supabase
         .from('suppliers')
         .select('id, name')
@@ -88,9 +101,18 @@ export default function BulkImportDialog({ open, onOpenChange }: BulkImportDialo
 
   // Fetch existing product codes for duplicate validation
   const { data: existingCodes = [] } = useQuery({
-    queryKey: ['existing-product-codes', currentBranch?.id],
+    queryKey: ['existing-product-codes', currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!currentBranch) return [];
+
+      if (isLocalMode) {
+        const items = await invoke<any[]>('get_inventory_items', { branchId: currentBranch.id });
+        return items
+          .filter(item => item.code)
+          .map(item => item.code?.toLowerCase().trim())
+          .filter(Boolean) as string[];
+      }
+
       const { data } = await supabase
         .from('inventory_items')
         .select('code')
@@ -287,7 +309,7 @@ export default function BulkImportDialog({ open, onOpenChange }: BulkImportDialo
         // Find supplier ID if exists
         let supplierId = null;
         if (product.proveedor) {
-          const supplier = suppliers.find(s => 
+          const supplier = suppliers.find(s =>
             s.name.toLowerCase() === product.proveedor.toLowerCase().trim()
           );
           supplierId = supplier?.id || null;
@@ -308,6 +330,14 @@ export default function BulkImportDialog({ open, onOpenChange }: BulkImportDialo
           active: true,
         };
       }));
+
+      if (isLocalMode) {
+        // En modo local, insertar uno por uno usando Tauri
+        for (const item of productsToInsert) {
+          await invoke('create_inventory_item', { item });
+        }
+        return productsToInsert.length;
+      }
 
       const { error } = await supabase
         .from('inventory_items')

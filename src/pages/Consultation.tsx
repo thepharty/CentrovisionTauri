@@ -26,12 +26,111 @@ import { validateAxisInput } from '@/lib/axisValidation';
 import { cn } from '@/lib/utils';
 import { VoiceDictationFAB } from '@/components/VoiceDictationFAB';
 import { DictationField } from '@/hooks/useVoiceDictation';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+import { readFileAsDataUrl } from '@/lib/localStorageHelper';
+
+// Check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+// Types for Tauri commands
+interface EncounterLocal {
+  id: string;
+  patient_id: string;
+  type: string;
+  doctor_id: string | null;
+  appointment_id: string | null;
+  date: string;
+  summary: string | null;
+  plan_tratamiento: string | null;
+  cirugias: string | null;
+  estudios: string | null;
+  proxima_cita: string | null;
+  excursiones_od: string | null;
+  excursiones_os: string | null;
+  motivo_consulta: string | null;
+}
+
+interface PatientLocal {
+  id: string;
+  code: string | null;
+  first_name: string;
+  last_name: string;
+  dob: string | null;
+  phone: string | null;
+  email: string | null;
+  address: string | null;
+  occupation: string | null;
+  diabetes: boolean;
+  hta: boolean;
+  allergies: string | null;
+  notes: string | null;
+  ophthalmic_history: string | null;
+}
+
+interface ProfileLocal {
+  id: string;
+  user_id: string;
+  full_name: string;
+  email: string | null;
+  specialty: string | null;
+  is_visible_in_dashboard: boolean;
+}
+
+interface ExamEyeLocal {
+  id: string;
+  encounter_id: string;
+  side: string;
+  av_sc: string | null;
+  av_cc: string | null;
+  ref_subj_sphere: number | null;
+  ref_subj_cyl: number | null;
+  ref_subj_axis: number | null;
+  ref_subj_av: string | null;
+  rx_sphere: number | null;
+  rx_cyl: number | null;
+  rx_axis: number | null;
+  rx_add: number | null;
+  slit_lamp: string | null;
+  iop: number | null;
+  plan: string | null;
+  prescription_notes: string | null;
+}
+
+interface AppointmentLocal {
+  id: string;
+  patient_id: string | null;
+  room_id: string | null;
+  doctor_id: string | null;
+  branch_id: string;
+  starts_at: string;
+  ends_at: string;
+  reason: string | null;
+  type: string;
+  status: string;
+  autorefractor: string | null;
+  lensometry: string | null;
+  keratometry_od_k1: string | null;
+  keratometry_od_k2: string | null;
+  keratometry_od_axis: string | null;
+  keratometry_os_k1: string | null;
+  keratometry_os_k2: string | null;
+  keratometry_os_axis: string | null;
+  pio_od: number | null;
+  pio_os: number | null;
+  photo_od: string | null;
+  photo_oi: string | null;
+}
 
 export default function Consultation() {
   const { encounterId } = useParams<{ encounterId: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { user } = useAuth();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   // Estados para agudeza visual
   const [avSinCorreccionOD, setAvSinCorreccionOD] = React.useState('');
@@ -415,8 +514,37 @@ export default function Consultation() {
   };
 
   const { data: encounter, isLoading } = useQuery({
-    queryKey: ['encounter', encounterId],
+    queryKey: ['encounter', encounterId, connectionMode],
     queryFn: async () => {
+      // En modo local, usar Tauri commands
+      if (isLocalMode) {
+        console.log('[Consultation] Getting encounter from PostgreSQL local');
+        const encounterData = await invoke<EncounterLocal | null>('get_encounter_by_id', {
+          encounterId: encounterId,
+        });
+        if (!encounterData) throw new Error('Encounter not found');
+
+        // Get patient data
+        const patientData = await invoke<PatientLocal | null>('get_patient_by_id', {
+          patientId: encounterData.patient_id,
+        });
+
+        // Get doctor data if exists
+        let doctorData = null;
+        if (encounterData.doctor_id) {
+          doctorData = await invoke<ProfileLocal | null>('get_profile_by_user_id', {
+            userId: encounterData.doctor_id,
+          });
+        }
+
+        return {
+          ...encounterData,
+          patient: patientData,
+          doctor: doctorData,
+        } as Encounter;
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('encounters')
         .select(`
@@ -435,7 +563,7 @@ export default function Consultation() {
           .select('*')
           .eq('user_id', data.doctor_id)
           .single();
-        
+
         return { ...data, doctor } as Encounter;
       }
 
@@ -446,16 +574,26 @@ export default function Consultation() {
 
   // Obtener el perfil del doctor actual de la sesión
   const { data: currentDoctor } = useQuery({
-    queryKey: ['current-doctor-profile', user?.id],
+    queryKey: ['current-doctor-profile', user?.id, connectionMode],
     queryFn: async () => {
       if (!user?.id) return null;
-      
+
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[Consultation] Getting current doctor profile from PostgreSQL local');
+        const profile = await invoke<ProfileLocal | null>('get_profile_by_user_id', {
+          userId: user.id,
+        });
+        return profile ? { full_name: profile.full_name, specialty: profile.specialty, gender: null } : null;
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('profiles')
         .select('full_name, specialty, gender')
         .eq('user_id', user.id)
         .single();
-      
+
       if (error) throw error;
       return data;
     },
@@ -483,7 +621,80 @@ export default function Consultation() {
     const loadExamData = async () => {
       if (!encounterId) return;
 
-      // Cargar datos de OD
+      // En modo local, usar Tauri commands
+      if (isLocalMode) {
+        console.log('[Consultation] Loading exam_eye data from PostgreSQL local');
+        const examEyes = await invoke<ExamEyeLocal[]>('get_exam_eyes_by_encounter', {
+          encounterId: encounterId,
+        });
+
+        const examOD = examEyes.find(e => e.side === 'OD');
+        const examOS = examEyes.find(e => e.side === 'OI');
+
+        if (examOD) {
+          setAvSinCorreccionOD(examOD.av_sc || '');
+          setAvConCorreccionOD(examOD.av_cc || '');
+          setSubjetivaOD({
+            esfera: formatLensForDisplay(examOD.ref_subj_sphere),
+            cilindro: formatLensForDisplay(examOD.ref_subj_cyl),
+            eje: examOD.ref_subj_axis?.toString() || '',
+            av: examOD.ref_subj_av || ''
+          });
+          setRecetaOD({
+            esfera: formatLensForDisplay(examOD.rx_sphere),
+            cilindro: formatLensForDisplay(examOD.rx_cyl),
+            eje: examOD.rx_axis?.toString() || '',
+            add: examOD.rx_add?.toString() || ''
+          });
+          setPioOD(examOD.iop?.toString() || '');
+          setLamparaOD(examOD.slit_lamp || '');
+          setNotaRefraccion(examOD.prescription_notes || '');
+
+          if (examOD.plan) {
+            try {
+              const planData = JSON.parse(examOD.plan as string);
+              setMaterialVidrio(planData.material?.vidrio || false);
+              setMaterialCR39(planData.material?.cr39 || false);
+              setMaterialPolicarbonato(planData.material?.policarbonato || false);
+              setColorBlanco(planData.color?.blanco || false);
+              setColorTransitions(planData.color?.transitions || false);
+              setColorAntireflejo(planData.color?.antireflejo || false);
+              setColorFiltroAzul(planData.color?.filtroAzul || false);
+              setColorOtros(planData.color?.otros || false);
+              setColorOtrosText(planData.color?.otrosText || '');
+              setTipoLejos(planData.tipo?.lejos || false);
+              setTipoCerca(planData.tipo?.cerca || false);
+              setTipoProgresivo(planData.tipo?.progresivo || false);
+              setTipoBifocal(planData.tipo?.bifocal || false);
+              setDp(planData.dp || '');
+            } catch (e) {
+              console.error('Error parsing plan data:', e);
+            }
+          }
+        }
+
+        if (examOS) {
+          setAvSinCorreccionOS(examOS.av_sc || '');
+          setAvConCorreccionOS(examOS.av_cc || '');
+          setSubjetivaOS({
+            esfera: formatLensForDisplay(examOS.ref_subj_sphere),
+            cilindro: formatLensForDisplay(examOS.ref_subj_cyl),
+            eje: examOS.ref_subj_axis?.toString() || '',
+            av: examOS.ref_subj_av || ''
+          });
+          setRecetaOS({
+            esfera: formatLensForDisplay(examOS.rx_sphere),
+            cilindro: formatLensForDisplay(examOS.rx_cyl),
+            eje: examOS.rx_axis?.toString() || '',
+            add: examOS.rx_add?.toString() || ''
+          });
+          setPioOS(examOS.iop?.toString() || '');
+          setLamparaOS(examOS.slit_lamp || '');
+        }
+        return;
+      }
+
+      // Modo Supabase - Cargar datos de OD
       const { data: examOD } = await supabase
         .from('exam_eye')
         .select('*')
@@ -509,7 +720,7 @@ export default function Consultation() {
         setPioOD(examOD.iop?.toString() || '');
         setLamparaOD(examOD.slit_lamp || '');
         setNotaRefraccion((examOD as any).prescription_notes || '');
-        
+
         // Cargar datos del plan (material, color, tipo, DP)
         if (examOD.plan) {
           try {
@@ -563,7 +774,7 @@ export default function Consultation() {
     };
 
     loadExamData();
-  }, [encounterId]);
+  }, [encounterId, isLocalMode]);
 
   // Cargar antecedentes del paciente
   React.useEffect(() => {
@@ -625,14 +836,7 @@ export default function Consultation() {
         updated_at: new Date().toISOString(),
       };
 
-      const { error } = await supabase
-        .from('encounters')
-        .update(consultationData)
-        .eq('id', encounterId);
-
-      if (error) throw error;
-
-      // Guardar o actualizar datos del examen ocular para OD
+      // Datos del examen ocular para OD
       const examODData = {
         encounter_id: encounterId,
         side: 'OD' as const,
@@ -660,28 +864,7 @@ export default function Consultation() {
         })
       };
 
-      // Verificar si ya existe un registro OD
-      const { data: existingOD } = await supabase
-        .from('exam_eye')
-        .select('id')
-        .eq('encounter_id', encounterId)
-        .eq('side', 'OD')
-        .maybeSingle();
-
-      if (existingOD) {
-        const { error: examODError } = await supabase
-          .from('exam_eye')
-          .update(examODData)
-          .eq('id', existingOD.id);
-        if (examODError) throw examODError;
-      } else {
-        const { error: examODError } = await supabase
-          .from('exam_eye')
-          .insert(examODData);
-        if (examODError) throw examODError;
-      }
-
-      // Guardar o actualizar datos del examen ocular para OS
+      // Datos del examen ocular para OS
       const examOSData = {
         encounter_id: encounterId,
         side: 'OI' as const,
@@ -708,6 +891,146 @@ export default function Consultation() {
           dp: dp,
         })
       };
+
+      // En modo local, usar Tauri commands
+      if (isLocalMode) {
+        console.log('[Consultation] Saving consultation via PostgreSQL local');
+
+        // 1. Update encounter
+        await invoke('update_encounter', {
+          encounterId: encounterId,
+          summary: consultationData.summary || null,
+          planTratamiento: consultationData.plan_tratamiento || null,
+          cirugias: consultationData.cirugias || null,
+          estudios: consultationData.estudios || null,
+          proximaCita: consultationData.proxima_cita || null,
+          excursionesOd: consultationData.excursiones_od || null,
+          excursionesOs: consultationData.excursiones_os || null,
+          motivoConsulta: consultationData.motivo_consulta || null,
+        });
+
+        // 2. Upsert exam_eye OD
+        await invoke('upsert_exam_eye', {
+          encounterId: examODData.encounter_id,
+          side: examODData.side,
+          avSc: examODData.av_sc || null,
+          avCc: examODData.av_cc || null,
+          refSphere: examODData.ref_sphere,
+          refCyl: examODData.ref_cyl,
+          refAxis: examODData.ref_axis,
+          refSubjSphere: examODData.ref_subj_sphere,
+          refSubjCyl: examODData.ref_subj_cyl,
+          refSubjAxis: examODData.ref_subj_axis,
+          refSubjAv: examODData.ref_subj_av,
+          rxSphere: examODData.rx_sphere,
+          rxCyl: examODData.rx_cyl,
+          rxAxis: examODData.rx_axis,
+          rxAdd: examODData.rx_add,
+          iop: examODData.iop,
+          slitLamp: examODData.slit_lamp || null,
+          prescriptionNotes: examODData.prescription_notes,
+          plan: examODData.plan || null,
+        });
+
+        // 3. Upsert exam_eye OS
+        await invoke('upsert_exam_eye', {
+          encounterId: examOSData.encounter_id,
+          side: examOSData.side,
+          avSc: examOSData.av_sc || null,
+          avCc: examOSData.av_cc || null,
+          refSphere: examOSData.ref_sphere,
+          refCyl: examOSData.ref_cyl,
+          refAxis: examOSData.ref_axis,
+          refSubjSphere: examOSData.ref_subj_sphere,
+          refSubjCyl: examOSData.ref_subj_cyl,
+          refSubjAxis: examOSData.ref_subj_axis,
+          refSubjAv: examOSData.ref_subj_av,
+          rxSphere: examOSData.rx_sphere,
+          rxCyl: examOSData.rx_cyl,
+          rxAxis: examOSData.rx_axis,
+          rxAdd: examOSData.rx_add,
+          iop: examOSData.iop,
+          slitLamp: examOSData.slit_lamp || null,
+          prescriptionNotes: examOSData.prescription_notes,
+          plan: examOSData.plan || null,
+        });
+
+        // 4. Update patient antecedentes
+        if (patient?.id) {
+          await invoke('update_patient', {
+            patientId: patient.id,
+            firstName: patient.first_name,
+            lastName: patient.last_name,
+            dob: patient.dob || null,
+            phone: patient.phone || null,
+            email: patient.email || null,
+            address: patient.address || null,
+            occupation: patient.occupation || null,
+            diabetes,
+            hta,
+            allergies: alergia ? alergiaText : '',
+            notes: antecedentesGenerales,
+            ophthalmicHistory: antecedentesOftalmologicos,
+          });
+        }
+
+        // 5. Si se marca como completada, actualizar appointment
+        if (markAsCompleted && appointment?.id) {
+          await invoke('update_appointment', {
+            appointmentId: appointment.id,
+            patientId: appointment.patient?.id || null,
+            roomId: appointment.room_id || null,
+            doctorId: appointment.doctor_id || null,
+            branchId: appointment.branch_id,
+            startsAt: appointment.starts_at,
+            endsAt: appointment.ends_at,
+            reason: appointment.reason || null,
+            appointmentType: appointment.type,
+            status: 'done',
+            autorefractor: `OD: ${autoOD.esfera} ${autoOD.cilindro} x ${autoOD.eje} | OS: ${autoOS.esfera} ${autoOS.cilindro} x ${autoOS.eje}`,
+            lensometry: `OD: ${lensOD.esfera} ${lensOD.cilindro} x ${lensOD.eje} | OS: ${lensOS.esfera} ${lensOS.cilindro} x ${lensOS.eje}`,
+            keratometryOdK1: keratODK1 || null,
+            keratometryOdK2: keratODK2 || null,
+            keratometryOdAxis: keratODAxis || null,
+            keratometryOsK1: keratOSK1 || null,
+            keratometryOsK2: keratOSK2 || null,
+            keratometryOsAxis: keratOSAxis || null,
+            pioOd: Number(pioPreconsultaOD) || null,
+            pioOs: Number(pioPreconsultaOS) || null,
+          });
+        }
+
+        return markAsCompleted;
+      }
+
+      // Modo Supabase
+      const { error } = await supabase
+        .from('encounters')
+        .update(consultationData)
+        .eq('id', encounterId);
+
+      if (error) throw error;
+
+      // Verificar si ya existe un registro OD
+      const { data: existingOD } = await supabase
+        .from('exam_eye')
+        .select('id')
+        .eq('encounter_id', encounterId)
+        .eq('side', 'OD')
+        .maybeSingle();
+
+      if (existingOD) {
+        const { error: examODError } = await supabase
+          .from('exam_eye')
+          .update(examODData)
+          .eq('id', existingOD.id);
+        if (examODError) throw examODError;
+      } else {
+        const { error: examODError } = await supabase
+          .from('exam_eye')
+          .insert(examODData);
+        if (examODError) throw examODError;
+      }
 
       // Verificar si ya existe un registro OS
       const { data: existingOS } = await supabase
@@ -750,7 +1073,7 @@ export default function Consultation() {
       if (markAsCompleted && appointment?.id) {
         const { error: appointmentError } = await supabase
           .from('appointments')
-          .update({ 
+          .update({
             status: 'done',
             autorefractor: `OD: ${autoOD.esfera} ${autoOD.cilindro} x ${autoOD.eje} | OS: ${autoOS.esfera} ${autoOS.cilindro} x ${autoOS.eje}`,
             lensometry: `OD: ${lensOD.esfera} ${lensOD.cilindro} x ${lensOD.eje} | OS: ${lensOS.esfera} ${lensOS.cilindro} x ${lensOS.eje}`,
@@ -843,22 +1166,51 @@ export default function Consultation() {
 
   // Get the appointment associated with this encounter
   const { data: appointment } = useQuery({
-    queryKey: ['encounter-appointment', encounter?.appointment_id, encounter?.patient_id, encounter?.date],
+    queryKey: ['encounter-appointment', encounter?.appointment_id, encounter?.patient_id, encounter?.date, connectionMode],
     queryFn: async () => {
       if (!encounter) return null;
-      
-      // Usar directamente el appointment_id si está disponible (más preciso)
+
+      // En modo local, usar Tauri commands
+      if (isLocalMode) {
+        console.log('[Consultation] Getting appointment from PostgreSQL local');
+
+        // Usar directamente el appointment_id si está disponible
+        if (encounter.appointment_id) {
+          const appointments = await invoke<AppointmentLocal[]>('get_appointments', {
+            branchId: null,
+            startDate: null,
+            endDate: null,
+          });
+          const found = appointments.find(a => a.id === encounter.appointment_id);
+          return found || null;
+        }
+
+        // Fallback: buscar por paciente y fecha
+        const encounterDate = new Date(encounter.date);
+        const startOfDay = clinicStartOfDay(encounterDate);
+        const endOfDay = clinicEndOfDay(encounterDate);
+
+        const appointments = await invoke<AppointmentLocal[]>('get_appointments', {
+          branchId: null,
+          startDate: startOfDay.toISOString(),
+          endDate: endOfDay.toISOString(),
+        });
+
+        return appointments.find(a => a.patient_id === encounter.patient_id) || null;
+      }
+
+      // Modo Supabase - Usar directamente el appointment_id si está disponible (más preciso)
       if (encounter.appointment_id) {
         const { data, error } = await supabase
           .from('appointments')
           .select('*')
           .eq('id', encounter.appointment_id)
           .maybeSingle();
-        
+
         if (error) return null;
         return data;
       }
-      
+
       // Fallback: buscar por paciente y fecha (para encounters antiguos sin appointment_id)
       const encounterDate = new Date(encounter.date);
       const startOfDay = clinicStartOfDay(encounterDate);
@@ -882,6 +1234,21 @@ export default function Consultation() {
   // Cargar URLs firmadas de las fotos
   React.useEffect(() => {
     const loadPhotoUrls = async () => {
+      // En modo local, usar storage local via SMB
+      if (isLocalMode) {
+        console.log('[Consultation] Loading photos from local storage');
+        if (appointment?.photo_od) {
+          const dataUrl = await readFileAsDataUrl('results', appointment.photo_od);
+          if (dataUrl) setPhotoODUrl(dataUrl);
+        }
+        if (appointment?.photo_oi) {
+          const dataUrl = await readFileAsDataUrl('results', appointment.photo_oi);
+          if (dataUrl) setPhotoOIUrl(dataUrl);
+        }
+        return;
+      }
+
+      // Modo Supabase
       if (appointment?.photo_od) {
         const { data } = await supabase.storage
           .from('results')
@@ -895,18 +1262,30 @@ export default function Consultation() {
         if (data) setPhotoOIUrl(data.signedUrl);
       }
     };
-    
+
     if (appointment) {
       loadPhotoUrls();
     }
-  }, [appointment]);
+  }, [appointment, isLocalMode]);
 
   // Check if this is the first consultation
   const { data: isFirstConsultation } = useQuery({
-    queryKey: ['first-consultation', encounter?.patient_id],
+    queryKey: ['first-consultation', encounter?.patient_id, connectionMode],
     queryFn: async () => {
       if (!encounter?.patient_id) return true;
-      
+
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[Consultation] Checking first consultation from PostgreSQL local');
+        const encounters = await invoke<EncounterLocal[]>('get_encounters_by_patient', {
+          patientId: encounter.patient_id,
+        });
+        // Filtrar el encounter actual
+        const otherEncounters = encounters.filter(e => e.id !== encounterId);
+        return otherEncounters.length === 0;
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('encounters')
         .select('id')

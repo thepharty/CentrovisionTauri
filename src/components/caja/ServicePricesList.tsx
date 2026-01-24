@@ -2,6 +2,13 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -47,6 +54,8 @@ const categoryIcons: Record<ServiceType, any> = {
 
 export default function ServicePricesList() {
   const { hasRole } = useAuth();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<'todos' | ServiceType>('todos');
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -54,14 +63,26 @@ export default function ServicePricesList() {
   const queryClient = useQueryClient();
 
   const { data: services = [], isLoading } = useQuery({
-    queryKey: ['service-prices'],
+    queryKey: ['service-prices', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        // En modo local, usar el comando Tauri
+        const data = await invoke<ServicePrice[]>('get_service_prices', {});
+        // Ordenar en cliente
+        return (data || []).sort((a, b) => {
+          if (a.service_type !== b.service_type) {
+            return a.service_type.localeCompare(b.service_type);
+          }
+          return a.service_name.localeCompare(b.service_name);
+        });
+      }
+
       const { data, error } = await supabase
         .from('service_prices')
         .select('*')
         .order('service_type', { ascending: true })
         .order('service_name', { ascending: true });
-      
+
       if (error) throw error;
       return data as ServicePrice[];
     }
@@ -69,11 +90,20 @@ export default function ServicePricesList() {
 
   const toggleActiveMutation = useMutation({
     mutationFn: async ({ id, currentActive }: { id: string; currentActive: boolean }) => {
+      if (isLocalMode) {
+        // En modo local, usar el comando Tauri
+        await invoke('update_service_price', {
+          id,
+          updates: { active: !currentActive }
+        });
+        return;
+      }
+
       const { error } = await supabase
         .from('service_prices')
         .update({ active: !currentActive })
         .eq('id', id);
-      
+
       if (error) throw error;
     },
     onSuccess: () => {

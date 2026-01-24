@@ -14,6 +14,43 @@ import { StudyView } from './views/StudyView';
 import { useAuth } from "@/hooks/useAuth";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import { useNetworkStatus } from "@/hooks/useNetworkStatus";
+import { invoke } from "@tauri-apps/api/core";
+
+// Check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+// Types for Tauri commands
+interface EncounterLocal {
+  id: string;
+  patient_id: string;
+  type: string;
+  doctor_id: string | null;
+  appointment_id: string | null;
+  date: string;
+  patient?: {
+    first_name: string;
+    last_name: string;
+  };
+}
+
+interface AppointmentLocal {
+  id: string;
+  type: string;
+  patient_id: string;
+  doctor_id: string | null;
+  starts_at: string;
+  patient?: {
+    first_name: string;
+    last_name: string;
+  };
+}
+
+interface InvoiceBasic {
+  id: string;
+}
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,21 +79,34 @@ export function ConsultationViewDialog({
   const { hasRole } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { connectionMode } = useNetworkStatus();
   const isAdmin = hasRole('admin');
   const [isDeleting, setIsDeleting] = useState(false);
 
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+
   // Si no hay encounterId pero sí appointmentId, buscar encounter por appointment
   const { data: foundEncounter } = useQuery({
-    queryKey: ['find-encounter-by-appointment', appointmentId],
+    queryKey: ['find-encounter-by-appointment', appointmentId, connectionMode],
     queryFn: async () => {
       if (!appointmentId) return null;
-      
+
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[ConsultationViewDialog] Getting encounter by appointment from PostgreSQL local');
+        const data = await invoke<EncounterLocal | null>('get_encounter_by_appointment', {
+          appointmentId: appointmentId,
+        });
+        return data ? { id: data.id } : null;
+      }
+
+      // Modo Supabase
       const { data } = await supabase
         .from('encounters')
         .select('id')
         .eq('appointment_id', appointmentId)
         .maybeSingle();
-      
+
       return data;
     },
     enabled: !encounterId && !!appointmentId && open,
@@ -65,8 +115,73 @@ export function ConsultationViewDialog({
   const effectiveEncounterId = encounterId || foundEncounter?.id || null;
 
   const { data: appointmentData, isLoading } = useQuery({
-    queryKey: ['consultation-appointment-type', effectiveEncounterId, appointmentId],
+    queryKey: ['consultation-appointment-type', effectiveEncounterId, appointmentId, connectionMode],
     queryFn: async () => {
+      // En modo local, usar Tauri commands
+      if (isLocalMode) {
+        console.log('[ConsultationViewDialog] Getting appointment data from PostgreSQL local');
+
+        // Si tenemos encounterId, usarlo directamente
+        if (effectiveEncounterId) {
+          const encounter = await invoke<EncounterLocal | null>('get_encounter_by_id', {
+            encounterId: effectiveEncounterId,
+          });
+
+          if (!encounter) throw new Error('Encounter not found');
+
+          if (encounter.appointment_id) {
+            // Buscar el appointment desde appointments cacheados
+            const appointments = await invoke<AppointmentLocal[]>('get_appointments', {
+              startDate: null,
+              endDate: null,
+              branchId: null,
+            });
+            const appointment = appointments.find(a => a.id === encounter.appointment_id);
+
+            return {
+              type: appointment?.type || 'consulta',
+              patient: encounter.patient,
+              appointmentId: encounter.appointment_id
+            };
+          }
+
+          return {
+            type: 'consulta',
+            patient: encounter.patient,
+            appointmentId: encounter.appointment_id
+          };
+        }
+
+        // Si solo tenemos appointmentId (sin encounter), obtener info básica
+        if (appointmentId) {
+          const appointments = await invoke<AppointmentLocal[]>('get_appointments', {
+            startDate: null,
+            endDate: null,
+            branchId: null,
+          });
+          const appointment = appointments.find(a => a.id === appointmentId);
+
+          if (!appointment) throw new Error('Appointment not found');
+
+          // Get patient data
+          const patient = await invoke<{ first_name: string; last_name: string } | null>('get_patient_by_id', {
+            patientId: appointment.patient_id,
+          });
+
+          return {
+            type: appointment.type,
+            patient: patient,
+            appointmentId: appointmentId,
+            patientId: appointment.patient_id,
+            doctorId: appointment.doctor_id,
+            startsAt: appointment.starts_at
+          };
+        }
+
+        return null;
+      }
+
+      // Modo Supabase
       // Si tenemos encounterId, usarlo directamente
       if (effectiveEncounterId) {
         const { data: encounter, error: encError } = await supabase
@@ -84,20 +199,20 @@ export function ConsultationViewDialog({
             .eq('id', encounter.appointment_id)
             .maybeSingle();
 
-          return { 
+          return {
             type: appointment?.type || 'consulta',
             patient: encounter.patient,
             appointmentId: encounter.appointment_id
           };
         }
 
-        return { 
-          type: 'consulta', 
+        return {
+          type: 'consulta',
           patient: encounter.patient,
-          appointmentId: encounter.appointment_id 
+          appointmentId: encounter.appointment_id
         };
       }
-      
+
       // Si solo tenemos appointmentId (sin encounter), obtener info básica
       if (appointmentId) {
         const { data: appointment, error: aptError } = await supabase
@@ -117,7 +232,7 @@ export function ConsultationViewDialog({
           startsAt: appointment.starts_at
         };
       }
-      
+
       return null;
     },
     enabled: (!!effectiveEncounterId || !!appointmentId) && open,
@@ -140,22 +255,48 @@ export function ConsultationViewDialog({
 
     const encounterType = encounterTypeMap[appointmentData.type] || 'consulta';
 
-    const { data: newEncounter, error } = await supabase
-      .from('encounters')
-      .insert([{
-        patient_id: appointmentData.patientId,
-        type: encounterType as 'consulta' | 'posop' | 'quirurgico' | 'urgencia',
-        doctor_id: appointmentData.doctorId,
-        appointment_id: appointmentId,
-        date: appointmentData.startsAt,
-      }])
-      .select()
-      .single();
+    try {
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[ConsultationViewDialog] Creating encounter via PostgreSQL local');
+        const newEncounter = await invoke<EncounterLocal>('create_encounter', {
+          encounter: {
+            patient_id: appointmentData.patientId,
+            type: encounterType,
+            doctor_id: appointmentData.doctorId || null,
+            appointment_id: appointmentId,
+          }
+        });
 
-    if (!error && newEncounter) {
-      const route = getEditRoute(appointmentData.type, newEncounter.id, appointmentId);
-      onClose();
-      navigate(route);
+        if (newEncounter) {
+          const route = getEditRoute(appointmentData.type, newEncounter.id, appointmentId);
+          onClose();
+          navigate(route);
+        }
+        return;
+      }
+
+      // Modo Supabase
+      const { data: newEncounter, error } = await supabase
+        .from('encounters')
+        .insert([{
+          patient_id: appointmentData.patientId,
+          type: encounterType as 'consulta' | 'posop' | 'quirurgico' | 'urgencia',
+          doctor_id: appointmentData.doctorId,
+          appointment_id: appointmentId,
+          date: appointmentData.startsAt,
+        }])
+        .select()
+        .single();
+
+      if (!error && newEncounter) {
+        const route = getEditRoute(appointmentData.type, newEncounter.id, appointmentId);
+        onClose();
+        navigate(route);
+      }
+    } catch (error: any) {
+      console.error('Error creating encounter:', error);
+      toast.error('Error al crear registro clínico: ' + (error.message || 'Error desconocido'));
     }
   };
 
@@ -232,29 +373,59 @@ export function ConsultationViewDialog({
   const handleDelete = async () => {
     const aptId = appointmentData?.appointmentId || appointmentId;
     if (!aptId) return;
-    
+
     setIsDeleting(true);
     try {
+      // En modo local, usar Tauri commands
+      if (isLocalMode) {
+        console.log('[ConsultationViewDialog] Deleting appointment via PostgreSQL local');
+
+        // 1. Verificar si hay factura asociada
+        const invoice = await invoke<InvoiceBasic | null>('get_invoice_by_appointment', {
+          appointmentId: aptId,
+        });
+
+        if (invoice) {
+          toast.error('No se puede eliminar: esta cita tiene una factura asociada');
+          setIsDeleting(false);
+          return;
+        }
+
+        // 2. Eliminar la cita (el backend eliminará el encounter en cascada o lo manejará)
+        await invoke('delete_appointment', {
+          appointmentId: aptId,
+        });
+
+        // 3. Invalidar cache para refrescar lista
+        queryClient.invalidateQueries({ queryKey: ['patient-appointments'] });
+        queryClient.invalidateQueries({ queryKey: ['appointments'] });
+
+        toast.success('Cita y registro clínico eliminados correctamente');
+        onClose();
+        return;
+      }
+
+      // Modo Supabase
       // 1. Verificar si hay factura asociada
       const { data: invoice } = await supabase
         .from('invoices')
         .select('id')
         .eq('appointment_id', aptId)
         .maybeSingle();
-      
+
       if (invoice) {
         toast.error('No se puede eliminar: esta cita tiene una factura asociada');
         setIsDeleting(false);
         return;
       }
-      
+
       // 2. Eliminar encounter si existe
       if (effectiveEncounterId) {
         const { error: encError } = await supabase
           .from('encounters')
           .delete()
           .eq('id', effectiveEncounterId);
-        
+
         if (encError) {
           console.error('Error eliminando encounter:', encError);
           toast.error('Error al eliminar el registro clínico: ' + encError.message);
@@ -262,19 +433,19 @@ export function ConsultationViewDialog({
           return;
         }
       }
-      
+
       // 3. Eliminar la cita
       const { error } = await supabase
         .from('appointments')
         .delete()
         .eq('id', aptId);
-      
+
       if (error) throw error;
-      
+
       // 4. Invalidar cache para refrescar lista
       queryClient.invalidateQueries({ queryKey: ['patient-appointments'] });
       queryClient.invalidateQueries({ queryKey: ['appointments'] });
-      
+
       toast.success('Cita y registro clínico eliminados correctamente');
       onClose();
     } catch (error: any) {

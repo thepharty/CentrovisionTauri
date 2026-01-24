@@ -1,7 +1,14 @@
 import { useState, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -58,6 +65,9 @@ const roomKindLabels: Record<string, string> = {
 
 export default function BranchesManager() {
   const queryClient = useQueryClient();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+
   const [showAddBranch, setShowAddBranch] = useState(false);
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
   const [managingRooms, setManagingRooms] = useState<Branch | null>(null);
@@ -81,8 +91,12 @@ export default function BranchesManager() {
 
   // Fetch branches with room count
   const { data: branches = [], isLoading: isLoadingBranches } = useQuery({
-    queryKey: ['admin-branches'],
+    queryKey: ['admin-branches', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const data = await invoke<Branch[]>('get_branches');
+        return data.sort((a, b) => a.name.localeCompare(b.name));
+      }
       const { data, error } = await supabase
         .from('branches')
         .select('*')
@@ -94,9 +108,13 @@ export default function BranchesManager() {
 
   // Fetch rooms for the branch being managed
   const { data: rooms = [], isLoading: isLoadingRooms } = useQuery({
-    queryKey: ['admin-branch-rooms', managingRooms?.id],
+    queryKey: ['admin-branch-rooms', managingRooms?.id, isLocalMode],
     queryFn: async () => {
       if (!managingRooms) return [];
+      if (isLocalMode) {
+        const data = await invoke<Room[]>('get_rooms', { branchId: managingRooms.id });
+        return data.sort((a, b) => a.name.localeCompare(b.name));
+      }
       const { data, error } = await supabase
         .from('rooms')
         .select('*')
@@ -110,15 +128,22 @@ export default function BranchesManager() {
 
   // Get room count per branch
   const { data: roomCounts = {} } = useQuery({
-    queryKey: ['admin-branch-room-counts'],
+    queryKey: ['admin-branch-room-counts', isLocalMode],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('rooms')
-        .select('branch_id, active');
-      if (error) throw error;
-      
+      let roomsData: { branch_id: string; active: boolean }[];
+
+      if (isLocalMode) {
+        roomsData = await invoke<Room[]>('get_all_rooms');
+      } else {
+        const { data, error } = await supabase
+          .from('rooms')
+          .select('branch_id, active');
+        if (error) throw error;
+        roomsData = data || [];
+      }
+
       const counts: Record<string, number> = {};
-      data?.forEach(room => {
+      roomsData.forEach(room => {
         if (room.active) {
           counts[room.branch_id] = (counts[room.branch_id] || 0) + 1;
         }
@@ -200,6 +225,15 @@ export default function BranchesManager() {
   const uploadHeaderImage = async (branchId: string): Promise<string | null> => {
     if (!headerImageFile) return branchPdfHeaderUrl;
 
+    // En modo local, no se puede subir a Supabase Storage
+    if (isLocalMode) {
+      toast({
+        title: 'Imagen no subida',
+        description: 'La imagen de encabezado no se puede subir en modo sin conexión. Se guardará cuando haya conexión.',
+      });
+      return branchPdfHeaderUrl;
+    }
+
     setUploadingHeader(true);
     try {
       const fileExt = headerImageFile.name.split('.').pop();
@@ -235,15 +269,24 @@ export default function BranchesManager() {
 
     setIsSaving(true);
     try {
-      const { error } = await supabase.from('branches').insert({
-        name: branchName.trim(),
-        address: branchAddress.trim() || null,
-        phone: branchPhone.trim() || null,
-        active: true,
-        code: null,
-      });
-
-      if (error) throw error;
+      if (isLocalMode) {
+        await invoke('create_branch', {
+          input: {
+            name: branchName.trim(),
+            address: branchAddress.trim() || null,
+            phone: branchPhone.trim() || null,
+          }
+        });
+      } else {
+        const { error } = await supabase.from('branches').insert({
+          name: branchName.trim(),
+          address: branchAddress.trim() || null,
+          phone: branchPhone.trim() || null,
+          active: true,
+          code: null,
+        });
+        if (error) throw error;
+      }
 
       toast({ title: 'Sede creada', description: 'La sede ha sido creada exitosamente.' });
       queryClient.invalidateQueries({ queryKey: ['admin-branches'] });
@@ -251,7 +294,7 @@ export default function BranchesManager() {
       setShowAddBranch(false);
       resetBranchForm();
     } catch (error: any) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error', description: error.message || String(error), variant: 'destructive' });
     } finally {
       setIsSaving(false);
     }
@@ -275,22 +318,35 @@ export default function BranchesManager() {
 
     setIsSaving(true);
     try {
-      // Subir imagen de encabezado si hay una nueva
+      // Subir imagen de encabezado si hay una nueva (muestra toast informativo en modo local)
       const newPdfHeaderUrl = await uploadHeaderImage(editingBranch.id);
 
-      const { error } = await supabase
-        .from('branches')
-        .update({
-          name: branchName.trim(),
-          address: branchAddress.trim() || null,
-          phone: branchPhone.trim() || null,
-          active: branchActive,
-          theme_primary_hsl: branchThemeColor || null,
-          pdf_header_url: newPdfHeaderUrl,
-        })
-        .eq('id', editingBranch.id);
-
-      if (error) throw error;
+      if (isLocalMode) {
+        await invoke('update_branch', {
+          id: editingBranch.id,
+          update: {
+            name: branchName.trim(),
+            address: branchAddress.trim() || null,
+            phone: branchPhone.trim() || null,
+            active: branchActive,
+            theme_primary_hsl: branchThemeColor || null,
+            pdf_header_url: newPdfHeaderUrl,
+          }
+        });
+      } else {
+        const { error } = await supabase
+          .from('branches')
+          .update({
+            name: branchName.trim(),
+            address: branchAddress.trim() || null,
+            phone: branchPhone.trim() || null,
+            active: branchActive,
+            theme_primary_hsl: branchThemeColor || null,
+            pdf_header_url: newPdfHeaderUrl,
+          })
+          .eq('id', editingBranch.id);
+        if (error) throw error;
+      }
 
       toast({ title: 'Sede actualizada', description: 'Los cambios han sido guardados.' });
       queryClient.invalidateQueries({ queryKey: ['admin-branches'] });
@@ -298,7 +354,7 @@ export default function BranchesManager() {
       setEditingBranch(null);
       resetBranchForm();
     } catch (error: any) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error', description: error.message || String(error), variant: 'destructive' });
     } finally {
       setIsSaving(false);
     }
@@ -312,14 +368,23 @@ export default function BranchesManager() {
 
     setIsSaving(true);
     try {
-      const { error } = await supabase.from('rooms').insert({
-        name: roomName.trim(),
-        kind: roomKind,
-        branch_id: managingRooms.id,
-        active: true,
-      });
-
-      if (error) throw error;
+      if (isLocalMode) {
+        await invoke('create_room', {
+          input: {
+            name: roomName.trim(),
+            kind: roomKind,
+            branch_id: managingRooms.id,
+          }
+        });
+      } else {
+        const { error } = await supabase.from('rooms').insert({
+          name: roomName.trim(),
+          kind: roomKind,
+          branch_id: managingRooms.id,
+          active: true,
+        });
+        if (error) throw error;
+      }
 
       toast({ title: 'Sala creada', description: 'La sala ha sido creada exitosamente.' });
       queryClient.invalidateQueries({ queryKey: ['admin-branch-rooms', managingRooms.id] });
@@ -328,7 +393,7 @@ export default function BranchesManager() {
       setRoomName('');
       setRoomKind('consultorio');
     } catch (error: any) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error', description: error.message || String(error), variant: 'destructive' });
     } finally {
       setIsSaving(false);
     }
@@ -336,17 +401,23 @@ export default function BranchesManager() {
 
   const handleToggleRoomActive = async (room: Room) => {
     try {
-      const { error } = await supabase
-        .from('rooms')
-        .update({ active: !room.active })
-        .eq('id', room.id);
-
-      if (error) throw error;
+      if (isLocalMode) {
+        await invoke('update_room', {
+          id: room.id,
+          update: { active: !room.active }
+        });
+      } else {
+        const { error } = await supabase
+          .from('rooms')
+          .update({ active: !room.active })
+          .eq('id', room.id);
+        if (error) throw error;
+      }
 
       queryClient.invalidateQueries({ queryKey: ['admin-branch-rooms', managingRooms?.id] });
       queryClient.invalidateQueries({ queryKey: ['admin-branch-room-counts'] });
     } catch (error: any) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error', description: error.message || String(error), variant: 'destructive' });
     }
   };
 
@@ -355,21 +426,24 @@ export default function BranchesManager() {
 
     setIsSaving(true);
     try {
-      // First delete associated rooms
-      const { error: roomsError } = await supabase
-        .from('rooms')
-        .delete()
-        .eq('branch_id', deletingBranch.id);
+      if (isLocalMode) {
+        // delete_branch in Tauri already handles deleting rooms first
+        await invoke('delete_branch', { id: deletingBranch.id });
+      } else {
+        // First delete associated rooms
+        const { error: roomsError } = await supabase
+          .from('rooms')
+          .delete()
+          .eq('branch_id', deletingBranch.id);
+        if (roomsError) throw roomsError;
 
-      if (roomsError) throw roomsError;
-
-      // Then delete the branch
-      const { error: branchError } = await supabase
-        .from('branches')
-        .delete()
-        .eq('id', deletingBranch.id);
-
-      if (branchError) throw branchError;
+        // Then delete the branch
+        const { error: branchError } = await supabase
+          .from('branches')
+          .delete()
+          .eq('id', deletingBranch.id);
+        if (branchError) throw branchError;
+      }
 
       toast({ title: 'Sede eliminada', description: 'La sede y sus salas han sido eliminadas.' });
       queryClient.invalidateQueries({ queryKey: ['admin-branches'] });
@@ -377,7 +451,7 @@ export default function BranchesManager() {
       queryClient.invalidateQueries({ queryKey: ['branches'] });
       setDeletingBranch(null);
     } catch (error: any) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error', description: error.message || String(error), variant: 'destructive' });
     } finally {
       setIsSaving(false);
     }

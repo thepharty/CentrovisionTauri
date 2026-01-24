@@ -17,6 +17,75 @@ import { cn } from '@/lib/utils';
 import * as XLSX from 'xlsx';
 import { DoctorDetailDialog } from '@/components/analytics/DoctorDetailDialog';
 import { useBranch } from '@/hooks/useBranch';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+// Types for Tauri commands
+interface AnalyticsServiceSales {
+  service_type: string;
+  cantidad: number;
+  total: number;
+}
+
+interface AnalyticsPaymentMethod {
+  metodo: string;
+  cantidad: number;
+  total: number;
+}
+
+interface AnalyticsItemDetail {
+  item_id: string;
+  item_name: string;
+  total_quantity: number;
+  total_revenue: number;
+}
+
+interface ClinicalStatsWithRevenue {
+  tipo_cita: string;
+  doctor_id: string | null;
+  doctor_name: string;
+  cantidad: number;
+  pacientes_unicos: number;
+  revenue_real: number;
+  revenue_estimado: number;
+  revenue_total: number;
+}
+
+interface AnalyticsInvoice {
+  id: string;
+  total_amount: number;
+  discount_value: number;
+  discount_type: string | null;
+  status: string;
+  created_at: string;
+}
+
+interface AnalyticsClosure {
+  id: string;
+  closure_date: string;
+  total_invoiced: number;
+  total_collected: number;
+  total_pending: number;
+  closed_by: string | null;
+  closed_by_name: string | null;
+}
+
+interface AnalyticsAppointment {
+  id: string;
+  starts_at: string;
+  type_name: string;
+  status: string;
+}
+
+interface AnalyticsDoctor {
+  user_id: string;
+  full_name: string;
+}
 
 type PeriodType = 'today' | 'week' | 'month' | 'custom';
 type ViewMode = 'financial' | 'clinical';
@@ -27,7 +96,9 @@ export default function Analytics() {
   const navigate = useNavigate();
   const { currentBranch } = useBranch();
   const branchId = currentBranch?.id;
-  
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+
   const [period, setPeriod] = useState<PeriodType>('today');
   const [viewMode, setViewMode] = useState<ViewMode>('financial');
   const [selectedDoctor, setSelectedDoctor] = useState<string | null>(null);
@@ -77,19 +148,36 @@ export default function Analytics() {
 
   // Query: Métricas principales
   const { data: metrics, isLoading: metricsLoading } = useQuery({
-    queryKey: ['analytics-metrics', from?.toISOString(), to?.toISOString(), branchId],
+    queryKey: ['analytics-metrics', from?.toISOString(), to?.toISOString(), branchId, isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        // Usar Tauri command para obtener facturas
+        const invoices = await invoke<AnalyticsInvoice[]>('get_analytics_invoices', {
+          startDate: from!.toISOString(),
+          endDate: to!.toISOString(),
+          branchFilter: branchId || null,
+        });
+
+        const totalRevenue = invoices?.reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0) || 0;
+        const transactionCount = invoices?.length || 0;
+        const avgTicket = transactionCount > 0 ? totalRevenue / transactionCount : 0;
+        const days = Math.max(1, Math.ceil((to!.getTime() - from!.getTime()) / (1000 * 60 * 60 * 24)));
+        const avgDaily = totalRevenue / days;
+
+        return { totalRevenue, avgDaily, transactionCount, avgTicket };
+      }
+
       let invoicesQuery = supabase
         .from('invoices')
         .select('total_amount, created_at, status')
         .gte('created_at', from!.toISOString())
         .lte('created_at', to!.toISOString())
         .neq('status', 'cancelada');
-      
+
       if (branchId) {
         invoicesQuery = invoicesQuery.eq('branch_id', branchId);
       }
-      
+
       const { data: invoices } = await invoicesQuery;
 
       const { data: payments } = await supabase
@@ -119,21 +207,33 @@ export default function Analytics() {
 
   // Query: Ingresos diarios
   const { data: dailyRevenue } = useQuery({
-    queryKey: ['analytics-daily', from?.toISOString(), to?.toISOString(), branchId],
+    queryKey: ['analytics-daily', from?.toISOString(), to?.toISOString(), branchId, isLocalMode],
     queryFn: async () => {
-      let query = supabase
-        .from('invoices')
-        .select('total_amount, created_at')
-        .gte('created_at', from!.toISOString())
-        .lte('created_at', to!.toISOString())
-        .neq('status', 'cancelada')
-        .order('created_at');
-      
-      if (branchId) {
-        query = query.eq('branch_id', branchId);
+      let data: { total_amount: number; created_at: string }[] | null = null;
+
+      if (isLocalMode) {
+        const invoices = await invoke<AnalyticsInvoice[]>('get_analytics_invoices', {
+          startDate: from!.toISOString(),
+          endDate: to!.toISOString(),
+          branchFilter: branchId || null,
+        });
+        data = invoices;
+      } else {
+        let query = supabase
+          .from('invoices')
+          .select('total_amount, created_at')
+          .gte('created_at', from!.toISOString())
+          .lte('created_at', to!.toISOString())
+          .neq('status', 'cancelada')
+          .order('created_at');
+
+        if (branchId) {
+          query = query.eq('branch_id', branchId);
+        }
+
+        const result = await query;
+        data = result.data;
       }
-      
-      const { data } = await query;
 
       const dailyMap = new Map<string, number>();
       data?.forEach((invoice) => {
@@ -151,8 +251,21 @@ export default function Analytics() {
 
   // Query: Ventas por tipo de servicio
   const { data: servicesSales } = useQuery({
-    queryKey: ['analytics-services', from?.toISOString(), to?.toISOString(), branchId],
+    queryKey: ['analytics-services', from?.toISOString(), to?.toISOString(), branchId, isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const data = await invoke<AnalyticsServiceSales[]>('get_analytics_service_sales', {
+          startDate: from!.toISOString(),
+          endDate: to!.toISOString(),
+          branchFilter: branchId || null,
+        });
+        return data?.map((item) => ({
+          tipo: item.service_type || 'Otro',
+          cantidad: Number(item.cantidad),
+          total: Number(item.total),
+        })) || [];
+      }
+
       const { data, error } = await supabase.rpc('get_service_sales', {
         start_date: from!.toISOString(),
         end_date: to!.toISOString(),
@@ -160,7 +273,7 @@ export default function Analytics() {
       });
 
       if (error) throw error;
-      
+
       return data?.map((item: any) => ({
         tipo: item.service_type || 'Otro',
         cantidad: Number(item.cantidad),
@@ -172,8 +285,21 @@ export default function Analytics() {
 
   // Query: Métodos de pago
   const { data: paymentMethods } = useQuery({
-    queryKey: ['analytics-payments', from?.toISOString(), to?.toISOString(), branchId],
+    queryKey: ['analytics-payments', from?.toISOString(), to?.toISOString(), branchId, isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const data = await invoke<AnalyticsPaymentMethod[]>('get_analytics_payment_methods', {
+          startDate: from!.toISOString(),
+          endDate: to!.toISOString(),
+          branchFilter: branchId || null,
+        });
+        return data?.map((item) => ({
+          metodo: item.metodo || 'Otro',
+          cantidad: Number(item.cantidad),
+          total: Number(item.total),
+        })) || [];
+      }
+
       const { data, error } = await supabase.rpc('get_payment_methods', {
         start_date: from!.toISOString(),
         end_date: to!.toISOString(),
@@ -193,19 +319,31 @@ export default function Analytics() {
 
   // Query: Historial de cierres
   const { data: closures } = useQuery({
-    queryKey: ['analytics-closures', from?.toISOString(), to?.toISOString(), branchId],
+    queryKey: ['analytics-closures', from?.toISOString(), to?.toISOString(), branchId, isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const data = await invoke<AnalyticsClosure[]>('get_analytics_closures', {
+          startDate: from!.toISOString(),
+          endDate: to!.toISOString(),
+          branchFilter: branchId || null,
+        });
+        return data?.map((closure) => ({
+          ...closure,
+          userName: closure.closed_by_name || 'N/A',
+        })) || [];
+      }
+
       let query = supabase
         .from('cash_closures')
         .select('*')
         .gte('closure_date', from!.toISOString())
         .lte('closure_date', to!.toISOString())
         .order('closure_date', { ascending: false });
-      
+
       if (branchId) {
         query = query.eq('branch_id', branchId);
       }
-      
+
       const { data: closuresData } = await query;
 
       if (!closuresData) return [];
@@ -229,8 +367,23 @@ export default function Analytics() {
 
   // Query: Productos más vendidos (usando v2 con filtro correcto por item_type='producto')
   const { data: topProducts } = useQuery({
-    queryKey: ['analytics-top-products', from?.toISOString(), to?.toISOString(), branchId],
+    queryKey: ['analytics-top-products', from?.toISOString(), to?.toISOString(), branchId, isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const data = await invoke<AnalyticsItemDetail[]>('get_analytics_inventory_details', {
+          startDate: from!.toISOString(),
+          endDate: to!.toISOString(),
+          branchFilter: branchId || null,
+        });
+        return data
+          ?.slice(0, 10)
+          .map((item) => ({
+            producto: item.item_name,
+            cantidad: Number(item.total_quantity),
+            total: Number(item.total_revenue),
+          })) || [];
+      }
+
       const { data, error } = await supabase.rpc('get_inventory_details_v2', {
         start_date: from!.toISOString(),
         end_date: to!.toISOString(),
@@ -252,8 +405,23 @@ export default function Analytics() {
 
   // Query: Servicios más solicitados (usando v2 con filtro correcto por item_type='servicio')
   const { data: topServices } = useQuery({
-    queryKey: ['analytics-top-services', from?.toISOString(), to?.toISOString(), branchId],
+    queryKey: ['analytics-top-services', from?.toISOString(), to?.toISOString(), branchId, isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const data = await invoke<AnalyticsItemDetail[]>('get_analytics_service_details', {
+          startDate: from!.toISOString(),
+          endDate: to!.toISOString(),
+          branchFilter: branchId || null,
+        });
+        return data
+          ?.slice(0, 10)
+          .map((item) => ({
+            servicio: item.item_name,
+            cantidad: Number(item.total_quantity),
+            total: Number(item.total_revenue),
+          })) || [];
+      }
+
       const { data, error } = await supabase.rpc('get_service_details_v2', {
         start_date: from!.toISOString(),
         end_date: to!.toISOString(),
@@ -275,8 +443,21 @@ export default function Analytics() {
 
   // Query: Análisis de descuentos
   const { data: discounts } = useQuery({
-    queryKey: ['analytics-discounts', from?.toISOString(), to?.toISOString(), branchId],
+    queryKey: ['analytics-discounts', from?.toISOString(), to?.toISOString(), branchId, isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        // Usar las facturas ya obtenidas y filtrar las que tienen descuento
+        const invoices = await invoke<AnalyticsInvoice[]>('get_analytics_invoices', {
+          startDate: from!.toISOString(),
+          endDate: to!.toISOString(),
+          branchFilter: branchId || null,
+        });
+        const withDiscount = invoices?.filter(inv => Number(inv.discount_value || 0) > 0) || [];
+        const totalDiscounts = withDiscount.reduce((sum, inv) => sum + Number(inv.discount_value || 0), 0);
+        const avgDiscount = withDiscount.length > 0 ? totalDiscounts / withDiscount.length : 0;
+        return { totalDiscounts, avgDiscount, count: withDiscount.length };
+      }
+
       let query = supabase
         .from('invoices')
         .select('discount_value, discount_type, created_at')
@@ -284,11 +465,11 @@ export default function Analytics() {
         .lte('created_at', to!.toISOString())
         .neq('status', 'cancelada')
         .gt('discount_value', 0);
-      
+
       if (branchId) {
         query = query.eq('branch_id', branchId);
       }
-      
+
       const { data } = await query;
 
       const totalDiscounts = data?.reduce((sum, inv) => sum + Number(inv.discount_value || 0), 0) || 0;
@@ -305,31 +486,46 @@ export default function Analytics() {
 
   // Query: Lista de doctores (solo usuarios con rol doctor)
   const { data: doctors } = useQuery({
-    queryKey: ['doctors-list'],
+    queryKey: ['doctors-list', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const data = await invoke<AnalyticsDoctor[]>('get_analytics_doctors');
+        return data || [];
+      }
+
       // Primero obtener IDs de usuarios con rol doctor
       const { data: roles } = await supabase
         .from('user_roles')
         .select('user_id')
         .eq('role', 'doctor');
-      
+
       if (!roles || roles.length === 0) return [];
-      
+
       // Luego obtener perfiles de esos usuarios
       const { data: profiles } = await supabase
         .from('profiles')
         .select('user_id, full_name')
         .in('user_id', roles.map(r => r.user_id))
         .order('full_name');
-      
+
       return profiles || [];
     },
   });
 
   // Query: Estadísticas clínicas con revenue (v2 con filtro por sucursal)
   const { data: clinicalStats, isLoading: clinicalStatsLoading } = useQuery({
-    queryKey: ['analytics-clinical-revenue', from?.toISOString(), to?.toISOString(), selectedDoctor, branchId],
+    queryKey: ['analytics-clinical-revenue', from?.toISOString(), to?.toISOString(), selectedDoctor, branchId, isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const data = await invoke<ClinicalStatsWithRevenue[]>('get_clinical_stats_with_revenue', {
+          startDate: from!.toISOString(),
+          endDate: to!.toISOString(),
+          doctorFilter: selectedDoctor || null,
+          branchFilter: branchId || null,
+        });
+        return data || [];
+      }
+
       const { data, error } = await supabase.rpc('get_clinical_stats_with_revenue_v2', {
         start_date: from!.toISOString(),
         end_date: to!.toISOString(),
@@ -348,25 +544,38 @@ export default function Analytics() {
 
   // Query: Tendencia diaria de citas
   const { data: dailyAppointments } = useQuery({
-    queryKey: ['analytics-daily-appointments', from?.toISOString(), to?.toISOString(), selectedDoctor, branchId],
+    queryKey: ['analytics-daily-appointments', from?.toISOString(), to?.toISOString(), selectedDoctor, branchId, isLocalMode],
     queryFn: async () => {
-      let query = supabase
-        .from('appointments')
-        .select('starts_at, type')
-        .gte('starts_at', from!.toISOString())
-        .lte('starts_at', to!.toISOString())
-        .eq('status', 'done')
-        .order('starts_at');
+      let data: { starts_at: string }[] | null = null;
 
-      if (selectedDoctor) {
-        query = query.eq('doctor_id', selectedDoctor);
-      }
-      
-      if (branchId) {
-        query = query.eq('branch_id', branchId);
-      }
+      if (isLocalMode) {
+        const appointments = await invoke<AnalyticsAppointment[]>('get_analytics_appointments', {
+          startDate: from!.toISOString(),
+          endDate: to!.toISOString(),
+          doctorFilter: selectedDoctor || null,
+          branchFilter: branchId || null,
+        });
+        data = appointments;
+      } else {
+        let query = supabase
+          .from('appointments')
+          .select('starts_at, type')
+          .gte('starts_at', from!.toISOString())
+          .lte('starts_at', to!.toISOString())
+          .eq('status', 'done')
+          .order('starts_at');
 
-      const { data } = await query;
+        if (selectedDoctor) {
+          query = query.eq('doctor_id', selectedDoctor);
+        }
+
+        if (branchId) {
+          query = query.eq('branch_id', branchId);
+        }
+
+        const result = await query;
+        data = result.data;
+      }
 
       const dailyMap = new Map<string, number>();
       data?.forEach((appt) => {

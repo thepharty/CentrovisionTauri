@@ -1,0 +1,5 @@
+[target.aarch64-apple-darwin]
+rustflags = ["-L", "native=/Users/arturo/Desktop/CENTROVISIONEHR/CentroVision Tauri/src-tauri/vosk-osx-0.3.42"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-L", "native=/Users/arturo/Desktop/CENTROVISIONEHR/CentroVision Tauri/src-tauri/vosk-osx-0.3.42"]

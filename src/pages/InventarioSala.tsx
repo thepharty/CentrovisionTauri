@@ -3,6 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useBranch } from '@/hooks/useBranch';
 import { useAuth } from '@/hooks/useAuth';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -58,11 +60,20 @@ export interface RoomInventoryMovement {
   item?: RoomInventoryItem;
 }
 
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
 export default function InventarioSala() {
   const navigate = useNavigate();
   const { currentBranch } = useBranch();
   const { user } = useAuth();
   const queryClient = useQueryClient();
+  const { connectionMode } = useNetworkStatus();
+
+  // Check if we should use local mode
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   
   const [selectedCategory, setSelectedCategory] = useState<RoomInventoryCategory | null>(null);
   const [selectedItem, setSelectedItem] = useState<RoomInventoryItem | null>(null);
@@ -73,9 +84,16 @@ export default function InventarioSala() {
 
   // Fetch categories
   const { data: categories = [], isLoading: loadingCategories } = useQuery({
-    queryKey: ['room-inventory-categories', currentBranch?.id],
+    queryKey: ['room-inventory-categories', currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!currentBranch?.id) return [];
+
+      if (isLocalMode) {
+        return await invoke<RoomInventoryCategory[]>('get_room_inventory_categories', {
+          branchId: currentBranch.id,
+        });
+      }
+
       const { data, error } = await supabase
         .from('room_inventory_categories')
         .select('*')
@@ -90,21 +108,28 @@ export default function InventarioSala() {
 
   // Fetch items for selected category
   const { data: items = [], isLoading: loadingItems } = useQuery({
-    queryKey: ['room-inventory-items', currentBranch?.id, selectedCategory?.id],
+    queryKey: ['room-inventory-items', currentBranch?.id, selectedCategory?.id, isLocalMode],
     queryFn: async () => {
       if (!currentBranch?.id) return [];
-      
+
+      if (isLocalMode) {
+        return await invoke<RoomInventoryItem[]>('get_room_inventory_items', {
+          branchId: currentBranch.id,
+          categoryId: selectedCategory?.id || null,
+        });
+      }
+
       let query = supabase
         .from('room_inventory_items')
         .select('*, category:room_inventory_categories(*)')
         .eq('branch_id', currentBranch.id)
         .eq('active', true)
         .order('name');
-      
+
       if (selectedCategory) {
         query = query.eq('category_id', selectedCategory.id);
       }
-      
+
       const { data, error } = await query;
       if (error) throw error;
       return data as RoomInventoryItem[];
@@ -114,9 +139,17 @@ export default function InventarioSala() {
 
   // Fetch all items for low stock alert
   const { data: allItems = [] } = useQuery({
-    queryKey: ['room-inventory-all-items', currentBranch?.id],
+    queryKey: ['room-inventory-all-items', currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!currentBranch?.id) return [];
+
+      if (isLocalMode) {
+        return await invoke<RoomInventoryItem[]>('get_room_inventory_items', {
+          branchId: currentBranch.id,
+          categoryId: null,
+        });
+      }
+
       const { data, error } = await supabase
         .from('room_inventory_items')
         .select('*, category:room_inventory_categories(*)')
@@ -133,6 +166,18 @@ export default function InventarioSala() {
   // Mutations
   const createCategoryMutation = useMutation({
     mutationFn: async (data: Partial<RoomInventoryCategory>) => {
+      if (isLocalMode) {
+        await invoke('create_room_inventory_category', {
+          input: {
+            name: data.name,
+            parent_id: data.parent_id || null,
+            display_order: data.display_order || 0,
+            branch_id: currentBranch!.id,
+          },
+        });
+        return;
+      }
+
       const { error } = await supabase
         .from('room_inventory_categories')
         .insert({
@@ -153,6 +198,18 @@ export default function InventarioSala() {
 
   const updateCategoryMutation = useMutation({
     mutationFn: async (data: Partial<RoomInventoryCategory> & { id: string }) => {
+      if (isLocalMode) {
+        await invoke('update_room_inventory_category', {
+          id: data.id,
+          updates: {
+            name: data.name,
+            parent_id: data.parent_id,
+            display_order: data.display_order,
+          },
+        });
+        return;
+      }
+
       const { error } = await supabase
         .from('room_inventory_categories')
         .update({
@@ -173,6 +230,11 @@ export default function InventarioSala() {
 
   const deleteCategoryMutation = useMutation({
     mutationFn: async (id: string) => {
+      if (isLocalMode) {
+        await invoke('delete_room_inventory_category', { id });
+        return;
+      }
+
       const { error } = await supabase
         .from('room_inventory_categories')
         .update({ active: false })
@@ -191,6 +253,24 @@ export default function InventarioSala() {
 
   const createItemMutation = useMutation({
     mutationFn: async (data: Partial<RoomInventoryItem>) => {
+      if (isLocalMode) {
+        await invoke('create_room_inventory_item', {
+          input: {
+            category_id: data.category_id,
+            name: data.name,
+            code: data.code || null,
+            brand: data.brand || null,
+            specification: data.specification || null,
+            current_stock: data.current_stock || 0,
+            min_stock: data.min_stock || 5,
+            unit: data.unit || 'unidad',
+            notes: data.notes || null,
+            branch_id: currentBranch!.id,
+          },
+        });
+        return;
+      }
+
       const { error } = await supabase
         .from('room_inventory_items')
         .insert({
@@ -218,6 +298,23 @@ export default function InventarioSala() {
 
   const updateItemMutation = useMutation({
     mutationFn: async (data: Partial<RoomInventoryItem> & { id: string }) => {
+      if (isLocalMode) {
+        await invoke('update_room_inventory_item', {
+          id: data.id,
+          updates: {
+            category_id: data.category_id,
+            name: data.name,
+            code: data.code,
+            brand: data.brand,
+            specification: data.specification,
+            min_stock: data.min_stock,
+            unit: data.unit,
+            notes: data.notes,
+          },
+        });
+        return;
+      }
+
       const { error } = await supabase
         .from('room_inventory_items')
         .update({
@@ -244,6 +341,11 @@ export default function InventarioSala() {
 
   const deleteItemMutation = useMutation({
     mutationFn: async (id: string) => {
+      if (isLocalMode) {
+        await invoke('delete_room_inventory_item', { id });
+        return;
+      }
+
       const { error } = await supabase
         .from('room_inventory_items')
         .update({ active: false })
@@ -260,6 +362,38 @@ export default function InventarioSala() {
 
   const createMovementMutation = useMutation({
     mutationFn: async (data: { item_id: string; quantity: number; movement_type: string; notes?: string }) => {
+      // Calculate new stock
+      const item = allItems.find(i => i.id === data.item_id);
+      let newStock = item?.current_stock || 0;
+      if (data.movement_type === 'entrada') {
+        newStock += data.quantity;
+      } else if (data.movement_type === 'uso') {
+        newStock -= data.quantity;
+      } else if (data.movement_type === 'ajuste') {
+        newStock = data.quantity;
+      }
+      newStock = Math.max(0, newStock);
+
+      if (isLocalMode) {
+        // Create movement
+        await invoke('create_room_inventory_movement', {
+          input: {
+            item_id: data.item_id,
+            quantity: data.quantity,
+            movement_type: data.movement_type,
+            notes: data.notes || null,
+            user_id: user?.id || null,
+            branch_id: currentBranch!.id,
+          },
+        });
+        // Update stock
+        await invoke('update_room_inventory_stock', {
+          id: data.item_id,
+          newStock,
+        });
+        return;
+      }
+
       // Crear movimiento
       const { error: movError } = await supabase
         .from('room_inventory_movements')
@@ -274,20 +408,10 @@ export default function InventarioSala() {
       if (movError) throw movError;
 
       // Actualizar stock del item
-      const item = allItems.find(i => i.id === data.item_id);
       if (item) {
-        let newStock = item.current_stock;
-        if (data.movement_type === 'entrada') {
-          newStock += data.quantity;
-        } else if (data.movement_type === 'uso') {
-          newStock -= data.quantity;
-        } else if (data.movement_type === 'ajuste') {
-          newStock = data.quantity;
-        }
-
         const { error: updateError } = await supabase
           .from('room_inventory_items')
-          .update({ current_stock: Math.max(0, newStock) })
+          .update({ current_stock: newStock })
           .eq('id', data.item_id);
         if (updateError) throw updateError;
       }

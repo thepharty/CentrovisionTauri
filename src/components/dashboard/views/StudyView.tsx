@@ -7,6 +7,38 @@ import { Button } from '@/components/ui/button';
 import { FileImage, Video, Download } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { PdfThumbnail } from '@/components/pdf/PdfThumbnail';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+import { readFileAsDataUrl } from '@/lib/localStorageHelper';
+
+// Check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+// Types for Tauri commands
+interface StudyLocal {
+  id: string;
+  patient_id: string;
+  appointment_id: string | null;
+  title: string;
+  eye_side: string;
+  comments: string | null;
+  status: string;
+}
+
+interface StudyFileLocal {
+  id: string;
+  study_id: string;
+  file_path: string;
+  mime_type: string | null;
+  side: string | null;
+}
+
+interface EncounterLocal {
+  id: string;
+  appointment_id: string | null;
+}
 
 interface StudyViewProps {
   encounterId?: string;
@@ -15,16 +47,40 @@ interface StudyViewProps {
 
 export function StudyView({ encounterId, appointmentId }: StudyViewProps) {
   const [filesWithUrls, setFilesWithUrls] = useState<any[]>([]);
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   // Fetch study data
   const { data: study, isLoading } = useQuery({
-    queryKey: ['study-view', encounterId, appointmentId],
+    queryKey: ['study-view', encounterId, appointmentId, connectionMode],
     queryFn: async () => {
       console.log('🔍 [StudyView] Props recibidas:', { encounterId, appointmentId });
-      
+
+      // En modo local, usar Tauri commands
+      if (isLocalMode) {
+        console.log('[StudyView] Getting study from PostgreSQL local');
+
+        let effectiveAppointmentId = appointmentId;
+
+        if (!effectiveAppointmentId && encounterId) {
+          const encounter = await invoke<EncounterLocal | null>('get_encounter_by_id', {
+            encounterId: encounterId,
+          });
+          effectiveAppointmentId = encounter?.appointment_id || null;
+        }
+
+        if (!effectiveAppointmentId) return null;
+
+        const studies = await invoke<StudyLocal[]>('get_studies_by_appointment', {
+          appointmentId: effectiveAppointmentId,
+        });
+        return studies[0] || null;
+      }
+
+      // Modo Supabase
       // @ts-ignore - Type inference issue with Supabase query
       let query = supabase.from('studies').select('*');
-      
+
       if (appointmentId) {
         console.log('📍 [StudyView] Buscando por appointment_id:', appointmentId);
         query = query.eq('appointment_id', appointmentId);
@@ -37,9 +93,9 @@ export function StudyView({ encounterId, appointmentId }: StudyViewProps) {
           .select('appointment_id')
           .eq('id', encounterId)
           .single();
-        
+
         console.log('📋 [StudyView] Encounter encontrado:', encounter);
-        
+
         if (encounter?.appointment_id) {
           console.log('✓ [StudyView] Usando appointment_id del encounter:', encounter.appointment_id);
           query = query.eq('appointment_id', encounter.appointment_id);
@@ -48,11 +104,11 @@ export function StudyView({ encounterId, appointmentId }: StudyViewProps) {
           return null;
         }
       }
-      
+
       const { data, error } = await query.maybeSingle();
-      
+
       console.log('✅ [StudyView] Resultado de query studies:', { data, error });
-      
+
       if (error) throw error;
       return data;
     },
@@ -61,18 +117,31 @@ export function StudyView({ encounterId, appointmentId }: StudyViewProps) {
 
   // Fetch study files
   const { data: studyFiles } = useQuery<any[]>({
-    queryKey: ['study-files', study?.id],
+    queryKey: ['study-files', study?.id, connectionMode],
     queryFn: async () => {
       console.log('📁 [StudyView] Buscando archivos para study_id:', study?.id);
       if (!study?.id) return [];
+
+      // En modo local, usar Tauri command para obtener archivos
+      if (isLocalMode) {
+        console.log('[StudyView] Getting study files from PostgreSQL local');
+        // Obtener los estudios con sus archivos incluidos
+        const studies = await invoke<any[]>('get_studies_by_patient', {
+          patientId: study.patient_id
+        });
+        // Buscar el estudio específico y retornar sus archivos
+        const currentStudy = studies.find(s => s.id === study.id);
+        return currentStudy?.study_files || [];
+      }
+
       // @ts-ignore - Type inference issue with Supabase query
       const { data, error } = await supabase
         .from('study_files')
         .select('*')
         .eq('study_id', study.id);
-      
+
       console.log('✅ [StudyView] Archivos encontrados:', { count: data?.length, data, error });
-      
+
       if (error) throw error;
       return data || [];
     },
@@ -88,6 +157,27 @@ export function StudyView({ encounterId, appointmentId }: StudyViewProps) {
         return;
       }
 
+      // En modo local, usar readFileAsDataUrl para obtener archivos locales
+      if (isLocalMode) {
+        console.log('[StudyView] Loading files from local SMB storage');
+        const filesWithLocalUrls = await Promise.all(
+          studyFiles.map(async (file) => {
+            try {
+              const dataUrl = await readFileAsDataUrl('studies', file.file_path);
+              console.log('🔐 [StudyView] Local URL generada para:', file.file_path, dataUrl ? '✓' : '✗');
+              return { ...file, signedUrl: dataUrl || '' };
+            } catch (error) {
+              console.error('[StudyView] Error loading local file:', file.file_path, error);
+              return { ...file, signedUrl: '' };
+            }
+          })
+        );
+        console.log('✅ [StudyView] Local URLs generadas:', filesWithLocalUrls.length);
+        setFilesWithUrls(filesWithLocalUrls);
+        return;
+      }
+
+      // Modo Supabase - usar URLs firmadas
       const filesWithSignedUrls = await Promise.all(
         studyFiles.map(async (file) => {
           const { data } = await supabase.storage
@@ -102,7 +192,7 @@ export function StudyView({ encounterId, appointmentId }: StudyViewProps) {
     };
 
     fetchSignedUrls();
-  }, [studyFiles]);
+  }, [studyFiles, isLocalMode]);
 
   if (isLoading) {
     return (

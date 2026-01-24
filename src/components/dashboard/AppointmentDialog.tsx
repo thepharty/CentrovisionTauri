@@ -21,6 +21,7 @@ import { fromClinicTime } from '@/lib/timezone';
 import { PatientSearch } from './PatientSearch';
 import { DuplicatePatientDialog } from './DuplicatePatientDialog';
 import { compressImage } from '@/lib/imageCompression';
+import { uploadFileToLocal } from '@/lib/localStorageHelper';
 import { useAuth } from '@/hooks/useAuth';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import { validateAxisInput } from '@/lib/axisValidation';
@@ -105,8 +106,11 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const { currentBranch } = useBranch();
-  const { isOnline } = useNetworkStatus();
+  const { connectionMode } = useNetworkStatus();
   const [photoOD, setPhotoOD] = useState<File | null>(null);
+
+  // Modo local: cuando connectionMode es 'local' u 'offline' y estamos en Tauri
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const [photoOI, setPhotoOI] = useState<File | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date>(initialDate || new Date());
   const [selectedEndDate, setSelectedEndDate] = useState<Date | undefined>(initialDate || new Date());
@@ -161,14 +165,16 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
   const selectedType = watch('type');
 
   const { data: doctors = [] } = useQuery({
-    queryKey: ['doctors'],
+    queryKey: ['doctors', connectionMode],
     queryFn: async () => {
-      // Use Supabase when online, SQLite only when offline
-      if (isTauri() && !navigator.onLine) {
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[AppointmentDialog] Getting doctors from PostgreSQL local');
         const { getDoctors } = await import('@/lib/dataSource');
         return getDoctors();
       }
 
+      // Modo Supabase
       const { data: roles } = await supabase
         .from('user_roles')
         .select('user_id')
@@ -186,14 +192,16 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
   });
 
   const { data: rooms = [] } = useQuery({
-    queryKey: ['rooms', currentBranch?.id],
+    queryKey: ['rooms', currentBranch?.id, connectionMode],
     queryFn: async () => {
-      // Use Supabase when online, SQLite only when offline
-      if (isTauri() && !navigator.onLine && currentBranch?.id) {
+      // En modo local, usar Tauri command
+      if (isLocalMode && currentBranch?.id) {
+        console.log('[AppointmentDialog] Getting rooms from PostgreSQL local');
         const { getRooms } = await import('@/lib/dataSource');
         return getRooms(currentBranch.id);
       }
 
+      // Modo Supabase
       const { data } = await supabase
         .from('rooms')
         .select('*')
@@ -295,11 +303,22 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
   const uploadPhoto = async (file: File, side: 'OD' | 'OI', patientId: string): Promise<string> => {
     // Comprimir la imagen antes de subir
     const compressedFile = await compressImage(file);
-    
+
     const fileExt = compressedFile.name.split('.').pop();
     const fileName = `${patientId}_${side}_${Date.now()}.${fileExt}`;
     const filePath = `${patientId}/${fileName}`;
 
+    // En modo local, usar almacenamiento SMB local
+    if (isLocalMode) {
+      console.log('[AppointmentDialog] Uploading photo to local SMB storage');
+      const success = await uploadFileToLocal('results', filePath, compressedFile);
+      if (!success) {
+        throw new Error('Error al guardar la foto localmente');
+      }
+      return filePath;
+    }
+
+    // Modo Supabase
     const { error: uploadError } = await supabase.storage
       .from('results')
       .upload(filePath, compressedFile);
@@ -341,19 +360,35 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
         return;
       }
 
-      const { error } = await supabase
-        .from('schedule_blocks')
-        .insert({
-          doctor_id: data.doctor_id || null,
-          room_id: data.room_id || null,
-          branch_id: currentBranch.id,
-          starts_at: blockStartUTC.toISOString(),
-          ends_at: blockEndUTC.toISOString(),
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[AppointmentDialog] Creating schedule block via PostgreSQL local');
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('create_schedule_block', {
+          doctorId: data.doctor_id || null,
+          roomId: data.room_id || null,
+          branchId: currentBranch.id,
+          startsAt: blockStartUTC.toISOString(),
+          endsAt: blockEndUTC.toISOString(),
           reason: data.reason || 'Horario bloqueado',
-          created_by: user?.id
+          createdBy: user?.id,
         });
+      } else {
+        // Modo Supabase
+        const { error } = await supabase
+          .from('schedule_blocks')
+          .insert({
+            doctor_id: data.doctor_id || null,
+            room_id: data.room_id || null,
+            branch_id: currentBranch.id,
+            starts_at: blockStartUTC.toISOString(),
+            ends_at: blockEndUTC.toISOString(),
+            reason: data.reason || 'Horario bloqueado',
+            created_by: user?.id
+          });
 
-      if (error) throw error;
+        if (error) throw error;
+      }
 
       const daysDiff = Math.ceil((blockEndUTC.getTime() - blockStartUTC.getTime()) / (1000 * 60 * 60 * 24));
       if (daysDiff > 1) {
@@ -393,9 +428,9 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
         // Buscar pacientes con nombre similar
         let similarPatients: any[] = [];
 
-        // Use Supabase when online, SQLite only when offline
-        if (isTauri() && !navigator.onLine) {
-          // Offline mode: usar búsqueda local
+        // En modo local, usar Tauri command
+        if (isLocalMode) {
+          console.log('[AppointmentDialog] Searching for duplicates via PostgreSQL local');
           const { getPatients } = await import('@/lib/dataSource');
           const searchResults = await getPatients(data.patient_first_name, 50);
           const searchResults2 = await getPatients(data.patient_last_name, 50);
@@ -409,6 +444,7 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
             return true;
           });
         } else {
+          // Modo Supabase
           const { data: supabasePatients } = await supabase
             .from('patients')
             .select('*')
@@ -473,8 +509,9 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
           }
         } else {
           // Crear nuevo paciente
-          // Use Supabase when online, SQLite only when offline
-          if (isTauri() && !navigator.onLine) {
+          // En modo local, usar Tauri command
+          if (isLocalMode) {
+            console.log('[AppointmentDialog] Creating patient via PostgreSQL local');
             const newPatient = await createPatientTauri({
               first_name: data.patient_first_name,
               last_name: data.patient_last_name,
@@ -486,6 +523,7 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
             });
             patientId = newPatient.id;
           } else {
+            // Modo Supabase
             const { data: newPatient, error: patientError } = await supabase
               .from('patients')
               .insert({
@@ -530,13 +568,15 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
       // Buscar quirófano si es doctor externo
       let externalDoctorRoomId = null;
       if (isExternalDoctor && (data.type === 'cirugia' || data.type === 'procedimiento')) {
-        // Use Supabase when online, SQLite only when offline
-        if (isTauri() && !navigator.onLine && currentBranch?.id) {
+        // En modo local, usar Tauri command
+        if (isLocalMode && currentBranch?.id) {
+          console.log('[AppointmentDialog] Getting quirofano from PostgreSQL local');
           const { getRooms } = await import('@/lib/dataSource');
           const branchRooms = await getRooms(currentBranch.id);
           const quirofano = branchRooms.find(r => r.kind === 'quirofano');
           externalDoctorRoomId = quirofano?.id || null;
         } else {
+          // Modo Supabase
           const { data: quirofano } = await supabase
             .from('rooms')
             .select('id')
@@ -584,10 +624,6 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
         branch_id: currentBranch.id,
       };
 
-      // Use Supabase when online, SQLite only when offline
-      // Usamos isOnline del contexto (checkNetworkStatus de Tauri) en lugar de navigator.onLine
-      const useLocalDB = isTauri() && !isOnline;
-
       // Validar máximo 2 citas en el mismo slot (solo para creación o si cambia el horario)
       const isNewAppointment = !appointment;
       const isTimeChanged = appointment && (
@@ -601,17 +637,39 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
         const slotEnd = addMinutes(appointmentDateUTC, 15).toISOString();
 
         // Buscar citas existentes en el mismo slot y doctor
-        const { data: existingAppointments, error: checkError } = await supabase
-          .from('appointments')
-          .select('id')
-          .eq('doctor_id', appointmentData.doctor_id)
-          .gte('starts_at', slotStart)
-          .lt('starts_at', slotEnd)
-          .neq('id', appointment?.id || '00000000-0000-0000-0000-000000000000');
+        // En modo local, usamos Tauri command
+        let existingAppointmentsCount = 0;
+        if (isLocalMode) {
+          console.log('[AppointmentDialog] Checking slot availability via PostgreSQL local');
+          const { invoke } = await import('@tauri-apps/api/core');
+          const existingAppointments = await invoke<any[]>('get_appointments', {
+            startDate: slotStart.split('T')[0],
+            endDate: slotStart.split('T')[0],
+            branchId: currentBranch.id,
+          });
+          existingAppointmentsCount = existingAppointments.filter(
+            a => a.doctor_id === appointmentData.doctor_id &&
+                 a.starts_at >= slotStart &&
+                 a.starts_at < slotEnd &&
+                 a.id !== (appointment?.id || '00000000-0000-0000-0000-000000000000')
+          ).length;
+        } else {
+          // Modo Supabase
+          const { data: existingAppointments, error: checkError } = await supabase
+            .from('appointments')
+            .select('id')
+            .eq('doctor_id', appointmentData.doctor_id)
+            .gte('starts_at', slotStart)
+            .lt('starts_at', slotEnd)
+            .neq('id', appointment?.id || '00000000-0000-0000-0000-000000000000');
 
-        if (checkError) {
-          console.error('Error checking slot availability:', checkError);
-        } else if (existingAppointments && existingAppointments.length >= 2) {
+          if (checkError) {
+            console.error('Error checking slot availability:', checkError);
+          }
+          existingAppointmentsCount = existingAppointments?.length || 0;
+        }
+
+        if (existingAppointmentsCount >= 2) {
           toast.error('Este horario ya tiene 2 citas. Seleccione otro horario.');
           setUploading(false);
           return;
@@ -620,7 +678,8 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
 
       if (appointment) {
         // Update existing appointment
-        if (useLocalDB) {
+        if (isLocalMode) {
+          console.log('[AppointmentDialog] Updating appointment via PostgreSQL local');
           await updateAppointmentTauri(appointment.id, {
             patient_id: patientId,
             doctor_id: isExternalDoctor ? undefined : (data.type === 'estudio' ? undefined : (data.doctor_id || undefined)),
@@ -632,6 +691,7 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
             status: 'scheduled',
           });
         } else {
+          // Modo Supabase
           const { error } = await supabase
             .from('appointments')
             .update(appointmentDataWithBranch)
@@ -642,7 +702,8 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
         toast.success('Cita actualizada exitosamente');
       } else {
         // Create new appointment
-        if (useLocalDB) {
+        if (isLocalMode) {
+          console.log('[AppointmentDialog] Creating appointment via PostgreSQL local');
           await createAppointmentTauri({
             patient_id: patientId,
             doctor_id: isExternalDoctor ? undefined : (data.type === 'estudio' ? undefined : (data.doctor_id || undefined)),
@@ -655,6 +716,7 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
             status: 'scheduled',
           });
         } else {
+          // Modo Supabase
           const { error } = await supabase
             .from('appointments')
             .insert(appointmentDataWithBranch);

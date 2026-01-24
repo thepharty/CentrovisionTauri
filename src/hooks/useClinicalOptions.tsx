@@ -1,6 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
 import React from 'react';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 
 // Orden específico de categorías de cirugía
 const CATEGORY_ORDER = [
@@ -56,17 +63,30 @@ const FALLBACK_PROCEDIMIENTOS = [
 ];
 
 export function useClinicalOptions() {
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+
   // Query para cirugías
   const { data: surgeryTypes, isLoading: isLoadingSurgeries } = useQuery({
-    queryKey: ['surgery-types'],
+    queryKey: ['surgery-types', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const data = await invoke<SurgeryType[]>('get_surgery_types');
+        // Filtrar activos y ordenar por categoría y display_order
+        return data
+          .filter(s => s.active)
+          .sort((a, b) => {
+            if (a.category !== b.category) return (a.category || '').localeCompare(b.category || '');
+            return a.display_order - b.display_order;
+          });
+      }
       const { data, error } = await supabase
         .from('surgery_types')
         .select('*')
         .eq('active', true)
         .order('category')
         .order('display_order');
-      
+
       if (error) throw error;
       return data as SurgeryType[];
     },
@@ -75,14 +95,21 @@ export function useClinicalOptions() {
 
   // Query para estudios
   const { data: studyTypes, isLoading: isLoadingStudies } = useQuery({
-    queryKey: ['study-types'],
+    queryKey: ['study-types', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const data = await invoke<StudyType[]>('get_study_types');
+        // Filtrar activos y ordenar por display_order
+        return data
+          .filter(s => s.active)
+          .sort((a, b) => a.display_order - b.display_order);
+      }
       const { data, error } = await supabase
         .from('study_types')
         .select('*')
         .eq('active', true)
         .order('display_order');
-      
+
       if (error) throw error;
       return data as StudyType[];
     },
@@ -91,14 +118,21 @@ export function useClinicalOptions() {
 
   // Query para procedimientos
   const { data: procedureTypes, isLoading: isLoadingProcedures } = useQuery({
-    queryKey: ['procedure-types'],
+    queryKey: ['procedure-types', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const data = await invoke<ProcedureType[]>('get_procedure_types');
+        // Filtrar activos y ordenar por display_order
+        return data
+          .filter(p => p.active)
+          .sort((a, b) => a.display_order - b.display_order);
+      }
       const { data, error } = await supabase
         .from('procedure_types')
         .select('*')
         .eq('active', true)
         .order('display_order');
-      
+
       if (error) throw error;
       return data as ProcedureType[];
     },

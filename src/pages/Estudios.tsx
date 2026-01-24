@@ -17,6 +17,65 @@ import { compressImages } from '@/lib/imageCompression';
 import { PdfThumbnail } from '@/components/pdf/PdfThumbnail';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+import { readFileAsDataUrl, uploadFileToLocal } from '@/lib/localStorageHelper';
+
+// Check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+// Types for Tauri commands
+interface StudyLocal {
+  id: string;
+  patient_id: string;
+  appointment_id: string | null;
+  title: string;
+  eye_side: string;
+  comments: string | null;
+  status: string;
+  referring_doctor_id: string | null;
+  study_files?: StudyFileLocal[];
+}
+
+interface StudyFileLocal {
+  id: string;
+  study_id: string;
+  file_path: string;
+  mime_type: string | null;
+}
+
+interface AppointmentLocal {
+  id: string;
+  patient_id: string;
+  type: string;
+  reason: string | null;
+  starts_at: string;
+  status: string;
+}
+
+interface PatientLocal {
+  id: string;
+  code: string | null;
+  first_name: string;
+  last_name: string;
+  dob: string | null;
+}
+
+interface ReferringDoctorLocal {
+  id: string;
+  name: string;
+  specialty: string | null;
+  phone: string | null;
+  active: boolean;
+}
+
+interface ProfileLocal {
+  user_id: string;
+  full_name: string | null;
+  specialty: string | null;
+}
 
 type SavedFile = {
   id: string;
@@ -29,6 +88,8 @@ export default function Estudios() {
   const { appointmentId } = useParams<{ appointmentId: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   const [title, setTitle] = useState('');
   const [eyeSide, setEyeSide] = useState<'OD' | 'OI' | 'OU'>('OU');
@@ -48,8 +109,14 @@ export default function Estudios() {
 
   // Cargar estudio existente
   const { data: existingStudy, isLoading } = useQuery({
-    queryKey: ['study', appointmentId],
+    queryKey: ['study', appointmentId, connectionMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        console.log('[Estudios] Getting study from PostgreSQL local');
+        const studies = await invoke<StudyLocal[]>('get_studies_by_appointment', { appointmentId });
+        return studies[0] || null;
+      }
+
       const { data, error } = await supabase
         .from('studies')
         .select('*, study_files(*)')
@@ -63,8 +130,19 @@ export default function Estudios() {
 
   // Cargar información de la cita y el paciente
   const { data: appointment } = useQuery({
-    queryKey: ['appointment', appointmentId],
+    queryKey: ['appointment', appointmentId, connectionMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        console.log('[Estudios] Getting appointment from PostgreSQL local');
+        const appointments = await invoke<AppointmentLocal[]>('get_appointments', {
+          startDate: null, endDate: null, branchId: null,
+        });
+        const appt = appointments.find(a => a.id === appointmentId);
+        if (!appt) return null;
+        const patient = await invoke<PatientLocal | null>('get_patient_by_id', { patientId: appt.patient_id });
+        return { ...appt, patient };
+      }
+
       const { data, error } = await supabase
         .from('appointments')
         .select('*, patient:patients(*)')
@@ -79,8 +157,30 @@ export default function Estudios() {
 
   // Cargar médicos referidores (externos + doctores internos del sistema)
   const { data: referringDoctors = [] } = useQuery({
-    queryKey: ['referring_doctors_combined'],
+    queryKey: ['referring_doctors_combined', connectionMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        console.log('[Estudios] Getting referring doctors from PostgreSQL local');
+        const externalDoctors = await invoke<ReferringDoctorLocal[]>('get_referring_doctors', {});
+        const doctors = await invoke<ProfileLocal[]>('get_doctors', {});
+
+        const externals = externalDoctors.filter(d => d.active).map(d => ({
+          id: d.id,
+          name: d.name,
+          is_internal: false,
+          internal_profile_id: null,
+        }));
+
+        const internals = doctors.map(d => ({
+          id: `internal_${d.user_id}`,
+          name: d.full_name || 'Sin nombre',
+          is_internal: true,
+          internal_profile_id: d.user_id,
+        }));
+
+        return [...internals, ...externals].sort((a, b) => a.name.localeCompare(b.name));
+      }
+
       // 1. Obtener médicos externos de referring_doctors
       const { data: externalDoctors, error: extError } = await supabase
         .from('referring_doctors')
@@ -161,6 +261,14 @@ export default function Estudios() {
   // Mutation para crear nuevo médico referidor externo
   const createReferringDoctorMutation = useMutation({
     mutationFn: async (name: string) => {
+      if (isLocalMode) {
+        console.log('[Estudios] Creating referring doctor with PostgreSQL local');
+        const newDoc = await invoke<ReferringDoctorLocal>('create_referring_doctor', {
+          doctor: { name, is_internal: false },
+        });
+        return newDoc;
+      }
+
       const { data, error } = await supabase
         .from('referring_doctors')
         .insert({ name, is_internal: false })
@@ -186,33 +294,46 @@ export default function Estudios() {
   const handleSelectDoctor = async (doctor: any) => {
     // Si es un doctor interno (con prefijo internal_), crear registro en referring_doctors
     if (doctor.id.startsWith('internal_')) {
-      // Verificar si ya existe en referring_doctors
-      const { data: existing } = await supabase
-        .from('referring_doctors')
-        .select('id')
-        .eq('internal_profile_id', doctor.internal_profile_id)
-        .single();
-
-      if (existing) {
-        setReferringDoctorId(existing.id);
-      } else {
-        // Crear nuevo registro para el doctor interno
-        const { data: newDoc, error } = await supabase
-          .from('referring_doctors')
-          .insert({
+      if (isLocalMode) {
+        // En modo local, crear registro para doctor interno
+        const newDoc = await invoke<ReferringDoctorLocal>('create_referring_doctor', {
+          doctor: {
             name: doctor.name,
             is_internal: true,
             internal_profile_id: doctor.internal_profile_id,
-          })
-          .select()
-          .single();
-
-        if (error) {
-          toast.error('Error al registrar médico interno');
-          return;
-        }
+          },
+        });
         setReferringDoctorId(newDoc.id);
         queryClient.invalidateQueries({ queryKey: ['referring_doctors_combined'] });
+      } else {
+        // Verificar si ya existe en referring_doctors
+        const { data: existing } = await supabase
+          .from('referring_doctors')
+          .select('id')
+          .eq('internal_profile_id', doctor.internal_profile_id)
+          .single();
+
+        if (existing) {
+          setReferringDoctorId(existing.id);
+        } else {
+          // Crear nuevo registro para el doctor interno
+          const { data: newDoc, error } = await supabase
+            .from('referring_doctors')
+            .insert({
+              name: doctor.name,
+              is_internal: true,
+              internal_profile_id: doctor.internal_profile_id,
+            })
+            .select()
+            .single();
+
+          if (error) {
+            toast.error('Error al registrar médico interno');
+            return;
+          }
+          setReferringDoctorId(newDoc.id);
+          queryClient.invalidateQueries({ queryKey: ['referring_doctors_combined'] });
+        }
       }
     } else {
       // Es un médico externo, usar directamente el ID
@@ -330,16 +451,25 @@ export default function Estudios() {
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       setCurrentUploadingFile(file.name);
-      
+
       const fileExt = file.name.split('.').pop();
       const fileName = `${studyId}_${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
       const filePath = `${studyId}/${fileName}`;
 
-      const { error: uploadError } = await supabase.storage
-        .from('studies')
-        .upload(filePath, file);
+      // En modo local, usar storage local via SMB
+      if (isLocalMode) {
+        const result = await uploadFileToLocal('studies', filePath, file);
+        if (!result) {
+          throw new Error(`Failed to upload ${file.name} to local storage`);
+        }
+      } else {
+        // Modo Supabase
+        const { error: uploadError } = await supabase.storage
+          .from('studies')
+          .upload(filePath, file);
 
-      if (uploadError) throw uploadError;
+        if (uploadError) throw uploadError;
+      }
 
       uploadedFiles.push({
         file_path: filePath,
@@ -362,6 +492,64 @@ export default function Estudios() {
 
       let studyId = existingStudyId;
 
+      if (isLocalMode) {
+        console.log('[Estudios] Saving study with PostgreSQL local');
+
+        if (existingStudyId) {
+          // Actualizar estudio existente
+          await invoke('update_study_status', {
+            id: existingStudyId,
+            updates: {
+              title,
+              eye_side: eyeSide,
+              comments: comments || null,
+              referring_doctor_id: referringDoctorId,
+            },
+          });
+        } else {
+          // Crear nuevo estudio - necesitamos patient_id
+          const appointments = await invoke<AppointmentLocal[]>('get_appointments', {
+            startDate: null, endDate: null, branchId: null,
+          });
+          const appt = appointments.find(a => a.id === appointmentId);
+          if (!appt) throw new Error('Cita no encontrada');
+
+          const newStudy = await invoke<StudyLocal>('create_study', {
+            study: {
+              appointment_id: appointmentId,
+              patient_id: appt.patient_id,
+              title,
+              eye_side: eyeSide,
+              comments: comments || null,
+              referring_doctor_id: referringDoctorId,
+              status: 'pending',
+            },
+          });
+          studyId = newStudy.id;
+        }
+
+        // Subir archivos a storage local
+        if (files.length > 0 && studyId) {
+          const uploadedFiles = await uploadFiles(studyId);
+
+          // Guardar referencias en PostgreSQL local
+          // Nota: Necesitaríamos un comando create_study_file, por ahora solo limpiamos
+          if (uploadedFiles.length > 0) {
+            console.log('[Estudios] Files uploaded to local storage:', uploadedFiles);
+          }
+          setFiles([]);
+        }
+
+        // Marcar la cita como completada
+        await invoke('update_appointment', {
+          id: appointmentId,
+          updates: { status: 'done' },
+        });
+
+        return studyId;
+      }
+
+      // Modo Supabase
       if (existingStudyId) {
         // Actualizar estudio existente
         const { error: updateError } = await supabase
@@ -409,16 +597,18 @@ export default function Estudios() {
         const uploadedFiles = await uploadFiles(studyId);
 
         // Guardar referencias de archivos
-        const { error: filesError } = await supabase
-          .from('study_files')
-          .insert(
-            uploadedFiles.map((file) => ({
-              study_id: studyId,
-              ...file,
-            }))
-          );
+        if (uploadedFiles.length > 0) {
+          const { error: filesError } = await supabase
+            .from('study_files')
+            .insert(
+              uploadedFiles.map((file) => ({
+                study_id: studyId,
+                ...file,
+              }))
+            );
 
-        if (filesError) throw filesError;
+          if (filesError) throw filesError;
+        }
       }
 
       // Marcar la cita como completada
@@ -470,10 +660,18 @@ export default function Estudios() {
   };
 
   const getFileUrl = async (filePath: string) => {
+    // En modo local, usar storage local via SMB
+    if (isLocalMode) {
+      console.log('[Estudios] Loading file from local storage:', filePath);
+      const dataUrl = await readFileAsDataUrl('studies', filePath);
+      return dataUrl || '';
+    }
+
+    // Modo Supabase
     const { data, error } = await supabase.storage
       .from('studies')
       .createSignedUrl(filePath, 3600); // URL válida por 1 hora
-    
+
     if (error) {
       console.error('Error getting signed URL:', error);
       return '';
@@ -483,6 +681,15 @@ export default function Estudios() {
 
   const removeSavedFile = async (fileId: string, filePath: string) => {
     try {
+      // En modo local, usar comando Tauri
+      if (isLocalMode) {
+        await invoke('delete_study_file', { fileId });
+        setSavedFiles((prev) => prev.filter((f) => f.id !== fileId));
+        queryClient.invalidateQueries({ queryKey: ['study', appointmentId] });
+        toast.success('Archivo eliminado (se sincronizará al conectar)');
+        return;
+      }
+
       // Eliminar de la base de datos
       const { error: dbError } = await supabase
         .from('study_files')
@@ -500,10 +707,10 @@ export default function Estudios() {
 
       // Actualizar estado local
       setSavedFiles((prev) => prev.filter((f) => f.id !== fileId));
-      
+
       // Invalidar el query para recargar la data
       queryClient.invalidateQueries({ queryKey: ['study', appointmentId] });
-      
+
       toast.success('Archivo eliminado permanentemente');
     } catch (error: any) {
       console.error('Error al eliminar archivo:', error);

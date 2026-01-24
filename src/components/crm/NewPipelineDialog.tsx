@@ -14,6 +14,27 @@ import { supabase } from '@/integrations/supabase/client';
 import { useCRMProcedureTypes, CRMProcedureType } from '@/hooks/useCRMProcedureTypes';
 import { useCreatePipeline } from '@/hooks/useCRMPipelines';
 import { useBranch } from '@/hooks/useBranch';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+// Types for Tauri commands
+interface PatientLocal {
+  id: string;
+  first_name: string;
+  last_name: string;
+  code: string | null;
+  phone: string | null;
+}
+
+interface DoctorLocal {
+  user_id: string;
+  full_name: string;
+}
 
 const formSchema = z.object({
   patient_id: z.string().min(1, 'Selecciona un paciente'),
@@ -34,8 +55,11 @@ export const NewPipelineDialog = ({ trigger }: NewPipelineDialogProps) => {
   const [open, setOpen] = useState(false);
   const [patientSearch, setPatientSearch] = useState('');
   const { currentBranch } = useBranch();
+  const { connectionMode } = useNetworkStatus();
   const { data: procedureTypes } = useCRMProcedureTypes();
   const createPipeline = useCreatePipeline();
+
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   const form = useForm<FormData>({
     resolver: zodResolver(formSchema),
@@ -51,10 +75,21 @@ export const NewPipelineDialog = ({ trigger }: NewPipelineDialogProps) => {
 
   // Search patients
   const { data: patients } = useQuery({
-    queryKey: ['patients-search', patientSearch],
+    queryKey: ['patients-search', patientSearch, connectionMode],
     queryFn: async () => {
       if (patientSearch.length < 2) return [];
-      
+
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[NewPipelineDialog] Searching patients from PostgreSQL local');
+        const data = await invoke<PatientLocal[]>('get_patients', {
+          searchQuery: patientSearch,
+          limit: 10,
+        });
+        return data;
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('patients')
         .select('id, first_name, last_name, code, phone')
@@ -69,17 +104,25 @@ export const NewPipelineDialog = ({ trigger }: NewPipelineDialogProps) => {
 
   // Fetch doctors - solo usuarios con rol doctor
   const { data: doctors } = useQuery({
-    queryKey: ['doctors-for-crm'],
+    queryKey: ['doctors-for-crm', connectionMode],
     queryFn: async () => {
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[NewPipelineDialog] Getting doctors from PostgreSQL local');
+        const data = await invoke<DoctorLocal[]>('get_doctors', {});
+        return data;
+      }
+
+      // Modo Supabase
       // Primero obtener los user_ids que tienen rol doctor
       const { data: doctorRoles, error: rolesError } = await supabase
         .from('user_roles')
         .select('user_id')
         .eq('role', 'doctor');
-      
+
       if (rolesError) throw rolesError;
       if (!doctorRoles || doctorRoles.length === 0) return [];
-      
+
       // Luego obtener sus perfiles
       const { data: profiles, error: profilesError } = await supabase
         .from('profiles')
@@ -87,7 +130,7 @@ export const NewPipelineDialog = ({ trigger }: NewPipelineDialogProps) => {
         .in('user_id', doctorRoles.map(r => r.user_id))
         .eq('is_visible_in_dashboard', true)
         .order('full_name');
-      
+
       if (profilesError) throw profilesError;
       return profiles || [];
     },

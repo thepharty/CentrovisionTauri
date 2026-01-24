@@ -15,6 +15,40 @@ import { format } from 'date-fns';
 import { toast } from 'sonner';
 import { ResearchFilters } from '@/pages/Research';
 import { cn } from '@/lib/utils';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+// Type for Tauri Research filters
+interface TauriResearchFilters {
+  start_date: string;
+  end_date: string;
+  doctor_filter: string | null;
+  diagnosis_filter: string | null;
+  search_field_type: string | null;
+  surgery_type_filter: string | null;
+  appointment_type_filter: string | null;
+  has_preop_data: boolean | null;
+  has_postop_data: boolean | null;
+  min_age: number | null;
+  max_age: number | null;
+  gender_filter: string | null;
+  has_diabetes: boolean | null;
+  has_hta: boolean | null;
+  has_autorefractor: boolean | null;
+  has_lensometry: boolean | null;
+  has_keratometry: boolean | null;
+  has_pio: boolean | null;
+  has_fundus_photos: boolean | null;
+  has_slit_lamp: boolean | null;
+  has_visual_acuity: boolean | null;
+  has_subjective_refraction: boolean | null;
+  has_prescription: boolean | null;
+}
 
 const getPlaceholderText = (fieldType?: string) => {
   switch(fieldType) {
@@ -46,10 +80,17 @@ export default function SearchPanel({
   onViewModeChange,
 }: SearchPanelProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   const { data: doctors } = useQuery({
-    queryKey: ['doctors'],
+    queryKey: ['doctors', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        // Use analytics doctors command which returns doctor list
+        const data = await invoke<{ user_id: string; full_name: string }[]>('get_analytics_doctors');
+        return data || [];
+      }
       const { data } = await supabase
         .from('profiles')
         .select('user_id, full_name')
@@ -61,51 +102,89 @@ export default function SearchPanel({
   const handleSearch = async () => {
     onLoadingChange(true);
     try {
-      const rpcFunction = viewMode === 'patients'
-        ? 'get_clinical_research_data_by_patient'
-        : 'get_clinical_research_data';
-      
-      const { data, error } = await supabase.rpc(rpcFunction, {
-        start_date: filters.startDate.toISOString(),
-        end_date: filters.endDate.toISOString(),
-        doctor_filter: filters.doctorId || null,
-        diagnosis_filter: filters.diagnosisFilter || null,
-        search_field_type: filters.searchFieldType || 'diagnosis',
-        surgery_type_filter: filters.surgeryTypeFilter || null,
-        appointment_type_filter: filters.appointmentTypeFilter || null,
-        has_preop_data: filters.hasPreopData ?? null,
-        has_postop_data: filters.hasPostopData ?? null,
-        min_age: filters.minAge ?? null,
-        max_age: filters.maxAge ?? null,
-        gender_filter: filters.genderFilter || null,
-        has_diabetes: filters.hasDiabetes ?? null,
-        has_hta: filters.hasHta ?? null,
-        has_autorefractor: filters.hasAutorefractor ?? null,
-        has_lensometry: filters.hasLensometry ?? null,
-        has_keratometry: filters.hasKeratometry ?? null,
-        has_pio: filters.hasPio ?? null,
-        has_fundus_photos: filters.hasFundusPhotos ?? null,
-        has_slit_lamp: filters.hasSlitLamp ?? null,
-        has_visual_acuity: filters.hasVisualAcuity ?? null,
-        has_subjective_refraction: filters.hasSubjectiveRefraction ?? null,
-        has_prescription: filters.hasPrescription ?? null,
-      });
+      let normalizedData: any[] = [];
 
-      if (error) throw error;
-      
+      if (isLocalMode) {
+        // Build filters object for Tauri command
+        const tauriFilters: TauriResearchFilters = {
+          start_date: filters.startDate.toISOString(),
+          end_date: filters.endDate.toISOString(),
+          doctor_filter: filters.doctorId || null,
+          diagnosis_filter: filters.diagnosisFilter || null,
+          search_field_type: filters.searchFieldType || 'diagnosis',
+          surgery_type_filter: filters.surgeryTypeFilter || null,
+          appointment_type_filter: filters.appointmentTypeFilter || null,
+          has_preop_data: filters.hasPreopData ?? null,
+          has_postop_data: filters.hasPostopData ?? null,
+          min_age: filters.minAge ?? null,
+          max_age: filters.maxAge ?? null,
+          gender_filter: filters.genderFilter || null,
+          has_diabetes: filters.hasDiabetes ?? null,
+          has_hta: filters.hasHta ?? null,
+          has_autorefractor: filters.hasAutorefractor ?? null,
+          has_lensometry: filters.hasLensometry ?? null,
+          has_keratometry: filters.hasKeratometry ?? null,
+          has_pio: filters.hasPio ?? null,
+          has_fundus_photos: filters.hasFundusPhotos ?? null,
+          has_slit_lamp: filters.hasSlitLamp ?? null,
+          has_visual_acuity: filters.hasVisualAcuity ?? null,
+          has_subjective_refraction: filters.hasSubjectiveRefraction ?? null,
+          has_prescription: filters.hasPrescription ?? null,
+        };
+
+        const commandName = viewMode === 'patients'
+          ? 'get_clinical_research_data_by_patient'
+          : 'get_clinical_research_data';
+
+        const data = await invoke<any[]>(commandName, { filters: tauriFilters });
+        normalizedData = data || [];
+      } else {
+        const rpcFunction = viewMode === 'patients'
+          ? 'get_clinical_research_data_by_patient'
+          : 'get_clinical_research_data';
+
+        const { data, error } = await supabase.rpc(rpcFunction, {
+          start_date: filters.startDate.toISOString(),
+          end_date: filters.endDate.toISOString(),
+          doctor_filter: filters.doctorId || null,
+          diagnosis_filter: filters.diagnosisFilter || null,
+          search_field_type: filters.searchFieldType || 'diagnosis',
+          surgery_type_filter: filters.surgeryTypeFilter || null,
+          appointment_type_filter: filters.appointmentTypeFilter || null,
+          has_preop_data: filters.hasPreopData ?? null,
+          has_postop_data: filters.hasPostopData ?? null,
+          min_age: filters.minAge ?? null,
+          max_age: filters.maxAge ?? null,
+          gender_filter: filters.genderFilter || null,
+          has_diabetes: filters.hasDiabetes ?? null,
+          has_hta: filters.hasHta ?? null,
+          has_autorefractor: filters.hasAutorefractor ?? null,
+          has_lensometry: filters.hasLensometry ?? null,
+          has_keratometry: filters.hasKeratometry ?? null,
+          has_pio: filters.hasPio ?? null,
+          has_fundus_photos: filters.hasFundusPhotos ?? null,
+          has_slit_lamp: filters.hasSlitLamp ?? null,
+          has_visual_acuity: filters.hasVisualAcuity ?? null,
+          has_subjective_refraction: filters.hasSubjectiveRefraction ?? null,
+          has_prescription: filters.hasPrescription ?? null,
+        });
+
+        if (error) throw error;
+        normalizedData = data || [];
+      }
+
       // Normalizar datos para modo pacientes
-      let normalizedData = data || [];
       if (viewMode === 'patients' && normalizedData.length > 0) {
         normalizedData = normalizedData.map((patient: any) => ({
           ...patient,
           visits: Array.isArray(patient.visits) ? patient.visits : []
         }));
-        
+
         const firstPatient = normalizedData[0] as any;
         console.log('✅ Normalized patient data:', firstPatient);
         console.log('✅ Total visits for first patient:', firstPatient?.visits?.length);
       }
-      
+
       onSearch(normalizedData);
       toast.success(`${normalizedData?.length || 0} ${viewMode === 'patients' ? 'pacientes' : 'casos'} encontrados`);
     } catch (error: any) {

@@ -25,6 +25,110 @@ import { usePrintPDF } from '@/hooks/usePrintPDF';
 import { PrintPreviewDialog } from '@/components/dashboard/PrintPreviewDialog';
 import { compressImages } from '@/lib/imageCompression';
 import jsPDF from 'jspdf';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+import { readFileAsDataUrl, uploadFileToLocal } from '@/lib/localStorageHelper';
+
+// Check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+// Types for Tauri commands
+interface EncounterLocal {
+  id: string;
+  patient_id: string;
+  type: string;
+  doctor_id: string | null;
+  appointment_id: string | null;
+  date: string;
+  summary: string | null;
+  plan_tratamiento: string | null;
+  proxima_cita: string | null;
+  motivo_consulta: string | null;
+}
+
+interface PatientLocal {
+  id: string;
+  code: string | null;
+  first_name: string;
+  last_name: string;
+  dob: string | null;
+  diabetes: boolean | null;
+  hta: boolean | null;
+  allergies: string | null;
+  notes: string | null;
+  ophthalmic_history: string | null;
+}
+
+interface ProfileLocal {
+  user_id: string;
+  full_name: string | null;
+  specialty: string | null;
+  gender?: string;
+}
+
+interface AppointmentLocal {
+  id: string;
+  patient_id: string;
+  type: string;
+  reason: string | null;
+  starts_at: string;
+  status: string;
+}
+
+interface StudyLocal {
+  id: string;
+  patient_id: string;
+  appointment_id: string | null;
+  title: string;
+  eye_side: string;
+  comments: string | null;
+  created_at: string;
+}
+
+interface SurgeryLocal {
+  id: string;
+  encounter_id: string;
+  tipo_cirugia: string | null;
+  ojo_operar: string | null;
+  nota_operatoria: string | null;
+  medicacion: string | null;
+  consentimiento_informado: boolean | null;
+  surgery_files?: SurgeryFileLocal[];
+}
+
+interface SurgeryFileLocal {
+  id: string;
+  surgery_id: string;
+  file_path: string;
+  mime_type: string | null;
+}
+
+interface ProcedureLocal {
+  id: string;
+  encounter_id: string;
+  tipo_procedimiento: string | null;
+  ojo_operar: string | null;
+}
+
+interface DiagnosisLocal {
+  id: string;
+  encounter_id: string;
+  label: string;
+  code: string | null;
+}
+
+interface ConsentSignatureLocal {
+  id: string;
+  surgery_id: string | null;
+  patient_name: string;
+  witness_name: string;
+  patient_signature: string;
+  witness_signature: string;
+  consent_text: string;
+  signed_at: string;
+}
 
 // Helper para formatear fechas de forma segura
 const formatConsentDate = (dateString: string | null | undefined, options?: Intl.DateTimeFormatOptions) => {
@@ -44,6 +148,8 @@ export default function Surgery() {
   const { encounterId } = useParams<{ encounterId: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   // Estados principales - simplificados según estructura de DB
   const [tipoCirugia, setTipoCirugia] = React.useState('');
@@ -93,8 +199,27 @@ export default function Surgery() {
   const { generatePDF, isGenerating, htmlContent, clearContent } = usePrintPDF();
 
   const { data: encounter, isLoading } = useQuery({
-    queryKey: ['encounter', encounterId],
+    queryKey: ['encounter', encounterId, connectionMode],
     queryFn: async () => {
+      // En modo local, usar Tauri commands
+      if (isLocalMode) {
+        console.log('[Surgery] Getting encounter from PostgreSQL local');
+        const enc = await invoke<EncounterLocal | null>('get_encounter_by_id', { encounterId });
+        if (!enc) return null;
+
+        // Get patient data
+        const patient = await invoke<PatientLocal | null>('get_patient_by_id', { patientId: enc.patient_id });
+
+        // Get doctor data if exists
+        let doctor = null;
+        if (enc.doctor_id) {
+          doctor = await invoke<ProfileLocal | null>('get_profile_by_user_id', { userId: enc.doctor_id });
+        }
+
+        return { ...enc, patient, doctor } as Encounter;
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('encounters')
         .select(`
@@ -113,7 +238,7 @@ export default function Surgery() {
           .select('*')
           .eq('user_id', data.doctor_id)
           .single();
-        
+
         return { ...data, doctor } as Encounter;
       }
 
@@ -126,10 +251,22 @@ export default function Surgery() {
 
   // Buscar el appointment asociado para obtener el tipo de cirugía
   const { data: appointment } = useQuery({
-    queryKey: ['appointment', encounter?.appointment_id],
+    queryKey: ['appointment', encounter?.appointment_id, connectionMode],
     queryFn: async () => {
       if (!encounter?.appointment_id) return null;
-      
+
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[Surgery] Getting appointment from PostgreSQL local');
+        const appointments = await invoke<AppointmentLocal[]>('get_appointments', {
+          startDate: null,
+          endDate: null,
+          branchId: null,
+        });
+        return appointments.find(a => a.id === encounter.appointment_id) || null;
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('appointments')
         .select('*')
@@ -144,10 +281,58 @@ export default function Surgery() {
 
   // Get all previous encounters for sidebar (excluding surgeries)
   const { data: previousEncounters } = useQuery({
-    queryKey: ['previous-encounters-list', encounter?.patient_id, encounterId],
+    queryKey: ['previous-encounters-list', encounter?.patient_id, encounterId, connectionMode],
     queryFn: async () => {
       if (!encounter?.patient_id) return [];
-      
+
+      // En modo local, usar Tauri commands
+      if (isLocalMode) {
+        console.log('[Surgery] Getting previous encounters from PostgreSQL local');
+        const encounters = await invoke<EncounterLocal[]>('get_encounters_by_patient', {
+          patientId: encounter.patient_id,
+        });
+
+        // Filter and sort
+        const filtered = encounters
+          .filter(e => e.id !== encounterId)
+          .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+          .slice(0, 10);
+
+        // Get appointment types for filtering
+        const allAppointments = await invoke<AppointmentLocal[]>('get_appointments', {
+          startDate: null,
+          endDate: null,
+          branchId: null,
+        });
+
+        const encountersWithTypes = await Promise.all(
+          filtered.map(async (enc) => {
+            const appointment = allAppointments.find(a => a.id === enc.appointment_id);
+            let studyData = null;
+            if (appointment?.type === 'estudio' && enc.appointment_id) {
+              const studies = await invoke<StudyLocal[]>('get_studies_by_appointment', {
+                appointmentId: enc.appointment_id,
+              });
+              studyData = studies[0];
+            }
+            return {
+              ...enc,
+              appointments: appointment ? [{ type: appointment.type }] : [],
+              studyTitle: studyData?.title || null,
+              studyEyeSide: studyData?.eye_side || null,
+            };
+          })
+        );
+
+        return encountersWithTypes.filter(enc => {
+          const appointmentType = enc.appointments?.[0]?.type;
+          return appointmentType !== 'cirugia'
+            && appointmentType !== 'procedimiento'
+            && appointmentType !== 'estudio';
+        });
+      }
+
+      // Modo Supabase
       const { data: encounters, error } = await supabase
         .from('encounters')
         .select('id, date, type, summary, appointment_id')
@@ -157,7 +342,7 @@ export default function Surgery() {
         .limit(10);
 
       if (error) throw error;
-      
+
       // For each encounter, fetch the related appointment and filter out surgeries
       if (encounters) {
         const encountersWithAppointments = await Promise.all(
@@ -178,7 +363,7 @@ export default function Surgery() {
                   .select('title, eye_side')
                   .eq('appointment_id', enc.appointment_id)
                   .maybeSingle();
-                
+
                 studyData = study;
               }
 
@@ -196,16 +381,16 @@ export default function Surgery() {
             };
           })
         );
-        
+
         // Filter out surgeries, procedures AND estudios
         return encountersWithAppointments.filter(enc => {
           const appointmentType = enc.appointments?.[0]?.type;
-          return appointmentType !== 'cirugia' 
+          return appointmentType !== 'cirugia'
               && appointmentType !== 'procedimiento'
               && appointmentType !== 'estudio';
         });
       }
-      
+
       return [];
     },
     enabled: !!encounter?.patient_id,
@@ -213,10 +398,22 @@ export default function Surgery() {
 
   // Get studies for sidebar
   const { data: patientStudies } = useQuery({
-    queryKey: ['patient-studies-list', encounter?.patient_id],
+    queryKey: ['patient-studies-list', encounter?.patient_id, connectionMode],
     queryFn: async () => {
       if (!encounter?.patient_id) return [];
-      
+
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[Surgery] Getting patient studies from PostgreSQL local');
+        const studies = await invoke<StudyLocal[]>('get_studies_by_patient', {
+          patientId: encounter.patient_id,
+        });
+        return studies
+          .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+          .slice(0, 10);
+      }
+
+      // Modo Supabase
       const { data: studies, error } = await supabase
         .from('studies')
         .select('id, title, eye_side, created_at, comments, appointment_id')
@@ -232,10 +429,62 @@ export default function Surgery() {
 
   // Get surgeries and procedures (appointments of type cirugia or procedimiento)
   const { data: surgeries } = useQuery({
-    queryKey: ['surgeries-list', encounter?.patient_id, encounterId],
+    queryKey: ['surgeries-list', encounter?.patient_id, encounterId, connectionMode],
     queryFn: async () => {
       if (!encounter?.patient_id) return [];
-      
+
+      // En modo local, usar Tauri commands
+      if (isLocalMode) {
+        console.log('[Surgery] Getting surgeries list from PostgreSQL local');
+
+        // Get all patient appointments
+        const allAppointments = await invoke<AppointmentLocal[]>('get_appointments', {
+          startDate: null,
+          endDate: null,
+          branchId: null,
+        });
+
+        // Filter surgical appointments for this patient
+        const surgicalAppointments = allAppointments
+          .filter(a => a.patient_id === encounter.patient_id && ['cirugia', 'procedimiento'].includes(a.type))
+          .sort((a, b) => (b.starts_at || '').localeCompare(a.starts_at || ''));
+
+        if (surgicalAppointments.length === 0) return [];
+
+        // Get all encounters for this patient
+        const allEncounters = await invoke<EncounterLocal[]>('get_encounters_by_patient', {
+          patientId: encounter.patient_id,
+        });
+
+        // Filter encounters linked to surgical appointments
+        const appointmentIds = surgicalAppointments.map(a => a.id);
+        const surgicalEncounters = allEncounters
+          .filter(e => e.appointment_id && appointmentIds.includes(e.appointment_id) && e.id !== encounterId)
+          .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+        // Get surgery and procedure data for each encounter
+        const surgeriesData = await invoke<SurgeryLocal[]>('get_surgeries_by_patient', {
+          patientId: encounter.patient_id,
+        });
+        const proceduresData = await invoke<ProcedureLocal[]>('get_procedures_by_patient', {
+          patientId: encounter.patient_id,
+        });
+
+        return surgicalEncounters.map(enc => {
+          const relatedAppointment = surgicalAppointments.find(a => a.id === enc.appointment_id);
+          const surgeryData = surgeriesData.find(s => s.encounter_id === enc.id);
+          const procedureData = proceduresData.find(p => p.encounter_id === enc.id);
+
+          return {
+            ...enc,
+            appointments: relatedAppointment ? [{ type: relatedAppointment.type }] : [],
+            surgery: surgeryData ? { tipo_cirugia: surgeryData.tipo_cirugia, ojo_operar: surgeryData.ojo_operar } : null,
+            procedure: procedureData ? { tipo_procedimiento: procedureData.tipo_procedimiento, ojo_operar: procedureData.ojo_operar } : null,
+          };
+        });
+      }
+
+      // Modo Supabase
       // 1. Buscar appointments de tipo cirugia o procedimiento
       const { data: surgicalAppointments, error: apptError } = await supabase
         .from('appointments')
@@ -257,7 +506,7 @@ export default function Surgery() {
         .order('date', { ascending: false });
 
       if (encError) throw encError;
-      
+
       // 3. Buscar datos de cirugía y procedimiento para cada encounter
       if (encounters) {
         const encountersWithSurgeryData = await Promise.all(
@@ -265,21 +514,21 @@ export default function Surgery() {
             const relatedAppointment = surgicalAppointments.find(
               a => a.id === enc.appointment_id
             );
-            
+
             // Fetch surgery data from surgeries table
             const { data: surgeryData } = await supabase
               .from('surgeries')
               .select('tipo_cirugia, ojo_operar')
               .eq('encounter_id', enc.id)
               .maybeSingle();
-            
+
             // Fetch procedure data from procedures table
             const { data: procedureData } = await supabase
               .from('procedures')
               .select('tipo_procedimiento, ojo_operar')
               .eq('encounter_id', enc.id)
               .maybeSingle();
-            
+
             return {
               ...enc,
               appointments: relatedAppointment ? [{ type: relatedAppointment.type }] : [],
@@ -290,7 +539,7 @@ export default function Surgery() {
         );
         return encountersWithSurgeryData;
       }
-      
+
       return [];
     },
     enabled: !!encounter?.patient_id,
@@ -307,16 +556,29 @@ export default function Surgery() {
 
   // Cargar datos de la cirugía desde la tabla surgeries con archivos
   const { data: surgery } = useQuery({
-    queryKey: ['surgery', encounterId],
+    queryKey: ['surgery', encounterId, connectionMode],
     queryFn: async () => {
       if (!encounterId) return null;
-      
+
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[Surgery] Getting surgery data from PostgreSQL local');
+        // get_surgeries_by_appointment doesn't work well here, so use get_surgeries_by_patient
+        if (!encounter?.patient_id) return null;
+        const surgeries = await invoke<SurgeryLocal[]>('get_surgeries_by_patient', {
+          patientId: encounter.patient_id,
+        });
+        const surgeryData = surgeries.find(s => s.encounter_id === encounterId);
+        return surgeryData || null;
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('surgeries')
         .select('*, surgery_files(*)')
         .eq('encounter_id', encounterId)
         .maybeSingle();
-      
+
       if (error) throw error;
       return data;
     },
@@ -325,10 +587,20 @@ export default function Surgery() {
 
   // Query para obtener la firma del consentimiento
   const { data: consentSignature } = useQuery({
-    queryKey: ['consent-signature', surgery?.id],
+    queryKey: ['consent-signature', surgery?.id, connectionMode],
     queryFn: async () => {
       if (!surgery?.id) return null;
 
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[Surgery] Getting consent signature from PostgreSQL local');
+        const signature = await invoke<ConsentSignatureLocal | null>('get_consent_signature_by_surgery', {
+          surgeryId: surgery.id,
+        });
+        return signature;
+      }
+
+      // Modo Supabase
       const { data, error } = await (supabase as any)
         .from('consent_signatures')
         .select('*')
@@ -357,19 +629,27 @@ export default function Surgery() {
       setNotaOperatoria(surgery.nota_operatoria || '');
       setMedicacion(surgery.medicacion || '');
       setConsentimientoInformado(surgery.consentimiento_informado || false);
-      
+
       // Cargar archivos existentes
       if (surgery.surgery_files && surgery.surgery_files.length > 0) {
         const loadFiles = async () => {
           const filesWithUrls = await Promise.all(
             surgery.surgery_files.map(async (file: any) => {
-              const { data } = await supabase.storage
-                .from('surgeries')
-                .createSignedUrl(file.file_path, 3600);
+              let url = '';
+              if (isLocalMode) {
+                // Modo local: usar storage SMB
+                url = await readFileAsDataUrl('surgeries', file.file_path) || '';
+              } else {
+                // Modo Supabase
+                const { data } = await supabase.storage
+                  .from('surgeries')
+                  .createSignedUrl(file.file_path, 3600);
+                url = data?.signedUrl || '';
+              }
               return {
                 id: file.id,
                 path: file.file_path,
-                url: data?.signedUrl || '',
+                url,
                 mime_type: file.mime_type || ''
               };
             })
@@ -379,7 +659,7 @@ export default function Surgery() {
         loadFiles();
       }
     }
-  }, [surgery]);
+  }, [surgery, isLocalMode]);
 
   // Cargar antecedentes del paciente
   React.useEffect(() => {
@@ -424,10 +704,67 @@ export default function Surgery() {
 
   // Get selected encounter details
   const { data: selectedEncounter } = useQuery({
-    queryKey: ['selected-encounter', selectedEncounterId],
+    queryKey: ['selected-encounter', selectedEncounterId, connectionMode],
     queryFn: async () => {
       if (!selectedEncounterId) return null;
-      
+
+      // En modo local, usar Tauri commands
+      if (isLocalMode) {
+        console.log('[Surgery] Getting selected encounter from PostgreSQL local');
+        const enc = await invoke<EncounterLocal | null>('get_encounter_by_id', {
+          encounterId: selectedEncounterId,
+        });
+        if (!enc) return null;
+
+        // Get patient
+        const patient = await invoke<PatientLocal | null>('get_patient_by_id', {
+          patientId: enc.patient_id,
+        });
+
+        // Get exam_eye
+        const examEyes = await invoke<any[]>('get_exam_eyes_by_encounter', {
+          encounterId: selectedEncounterId,
+        });
+
+        // Get diagnoses
+        const diagnoses = await invoke<DiagnosisLocal[]>('get_diagnoses_by_encounter', {
+          encounterId: selectedEncounterId,
+        });
+
+        // Get appointment by appointment_id if exists
+        let appointment = null;
+        if (enc.appointment_id) {
+          const allAppointments = await invoke<AppointmentLocal[]>('get_appointments', {
+            startDate: null,
+            endDate: null,
+            branchId: null,
+          });
+          appointment = allAppointments.find(a => a.id === enc.appointment_id) || null;
+        }
+
+        // Get surgery and procedure data
+        const surgeries = enc.patient_id
+          ? await invoke<SurgeryLocal[]>('get_surgeries_by_patient', { patientId: enc.patient_id })
+          : [];
+        const surgery = surgeries.find(s => s.encounter_id === selectedEncounterId) || null;
+
+        const procedures = enc.patient_id
+          ? await invoke<ProcedureLocal[]>('get_procedures_by_patient', { patientId: enc.patient_id })
+          : [];
+        const procedure = procedures.find(p => p.encounter_id === selectedEncounterId) || null;
+
+        // Get doctor
+        let doctor = null;
+        if (enc.doctor_id) {
+          doctor = await invoke<ProfileLocal | null>('get_profile_by_user_id', {
+            userId: enc.doctor_id,
+          });
+        }
+
+        return { ...enc, patient, exam_eye: examEyes, diagnoses, appointment, surgery, procedure, doctor };
+      }
+
+      // Modo Supabase
       const { data, error } = await supabase
         .from('encounters')
         .select(`
@@ -440,7 +777,7 @@ export default function Surgery() {
         .maybeSingle();
 
       if (error) throw error;
-      
+
       // Fetch appointment and surgery data
       if (data) {
         const encounterDate = new Date(data.date);
@@ -485,7 +822,7 @@ export default function Surgery() {
 
         return { ...data, appointment, surgery, procedure, doctor };
       }
-      
+
       return data;
     },
     enabled: !!selectedEncounterId,
@@ -625,6 +962,21 @@ export default function Surgery() {
   };
 
   const removeSavedFile = async (fileId: string, filePath: string) => {
+    // En modo local, usar comando Tauri
+    if (isLocalMode) {
+      try {
+        await invoke('delete_surgery_file', { fileId });
+        setSavedFiles(prev => prev.filter(f => f.id !== fileId));
+        queryClient.invalidateQueries({ queryKey: ['surgery', encounterId] });
+        toast.success('Archivo eliminado (se sincronizará al conectar)');
+        setFileToDelete(null);
+      } catch (error: any) {
+        console.error('Error al eliminar archivo:', error);
+        toast.error('Error al eliminar el archivo: ' + error);
+      }
+      return;
+    }
+
     try {
       // Eliminar de la base de datos
       const { error: dbError } = await supabase
@@ -681,26 +1033,36 @@ export default function Surgery() {
         const fileName = `${timestamp}_${file.name}`;
         const filePath = `surgeries/${encounterId}/${fileName}`;
 
-        // Subir archivo al storage
-        const { error: uploadError } = await supabase.storage
-          .from('surgeries')
-          .upload(filePath, file, {
-            cacheControl: '3600',
-            upsert: false
-          });
+        if (isLocalMode) {
+          // Modo local: subir a storage SMB
+          const result = await uploadFileToLocal('surgeries', filePath, file);
+          if (!result) {
+            throw new Error(`Failed to upload ${file.name} to local storage`);
+          }
+          // Nota: La referencia en BD se guardaría con un comando Tauri create_surgery_file
+          console.log('[Surgery] File uploaded to local storage:', filePath);
+        } else {
+          // Modo Supabase: subir a Supabase Storage
+          const { error: uploadError } = await supabase.storage
+            .from('surgeries')
+            .upload(filePath, file, {
+              cacheControl: '3600',
+              upsert: false
+            });
 
-        if (uploadError) throw uploadError;
+          if (uploadError) throw uploadError;
 
-        // Guardar referencia en la base de datos
-        const { error: dbError } = await supabase
-          .from('surgery_files')
-          .insert({
-            surgery_id: surgeryId,
-            file_path: filePath,
-            mime_type: file.type
-          });
+          // Guardar referencia en la base de datos
+          const { error: dbError } = await supabase
+            .from('surgery_files')
+            .insert({
+              surgery_id: surgeryId,
+              file_path: filePath,
+              mime_type: file.type
+            });
 
-        if (dbError) throw dbError;
+          if (dbError) throw dbError;
+        }
       }
 
       // Limpiar archivos seleccionados
@@ -721,6 +1083,92 @@ export default function Surgery() {
     mutationFn: async () => {
       if (!encounterId) return;
 
+      // En modo local, usar Tauri commands
+      if (isLocalMode) {
+        console.log('[Surgery] Saving surgery data with PostgreSQL local');
+
+        // 1. Actualizar encounter
+        await invoke('update_encounter', {
+          id: encounterId,
+          updates: {
+            summary: diagnosticoPreoperatorio,
+            plan_tratamiento: planQuirurgico,
+            proxima_cita: proximaCita,
+            motivo_consulta: `Cirugía: ${tipoCirugia}`,
+          },
+        });
+
+        // 2. Actualizar antecedentes del paciente
+        if (patient?.id) {
+          await invoke('update_patient', {
+            id: patient.id,
+            updates: {
+              diabetes,
+              hta,
+              allergies: alergia ? alergiaText : null,
+              notes: antecedentesGenerales,
+              ophthalmic_history: antecedentesOftalmologicos,
+            },
+          });
+        }
+
+        // 3. Guardar/actualizar en tabla surgeries
+        // Check if surgery already exists
+        const existingSurgeries = patient?.id
+          ? await invoke<SurgeryLocal[]>('get_surgeries_by_patient', { patientId: patient.id })
+          : [];
+        const existingSurgery = existingSurgeries.find(s => s.encounter_id === encounterId);
+
+        if (existingSurgery) {
+          await invoke('update_surgery', {
+            id: existingSurgery.id,
+            updates: {
+              tipo_cirugia: tipoCirugia,
+              ojo_operar: ojoOperar,
+              nota_operatoria: notaOperatoria,
+              medicacion: medicacion,
+              consentimiento_informado: consentimientoInformado,
+            },
+          });
+        } else {
+          await invoke('create_surgery', {
+            surgery: {
+              encounter_id: encounterId,
+              tipo_cirugia: tipoCirugia,
+              ojo_operar: ojoOperar,
+              nota_operatoria: notaOperatoria,
+              medicacion: medicacion,
+              consentimiento_informado: consentimientoInformado,
+            },
+          });
+        }
+
+        // 4. Guardar diagnóstico si no existe
+        if (diagnosticoPreoperatorio.trim()) {
+          const existingDiagnoses = await invoke<DiagnosisLocal[]>('get_diagnoses_by_encounter', {
+            encounterId: encounterId,
+          });
+          if (existingDiagnoses.length === 0) {
+            await invoke('create_diagnosis', {
+              diagnosis: {
+                encounter_id: encounterId,
+                label: diagnosticoPreoperatorio,
+                code: null,
+              },
+            });
+          }
+        }
+
+        // Archivos no se pueden subir en modo local
+        if (files.length > 0) {
+          toast.info('Los archivos no se pueden subir en modo local');
+          setFiles([]);
+        }
+
+        return;
+      }
+
+      // Modo Supabase
       // 1. Actualizar encounter con diagnóstico, plan y próxima cita
       const { error: encounterError } = await supabase
         .from('encounters')
@@ -851,13 +1299,20 @@ export default function Surgery() {
 
   const handleFinishSurgery = async () => {
     await saveMutation.mutateAsync();
-    
+
     // Marcar la cita como completada
     if (appointment?.id) {
-      await supabase
-        .from('appointments')
-        .update({ status: 'done' })
-        .eq('id', appointment.id);
+      if (isLocalMode) {
+        await invoke('update_appointment', {
+          id: appointment.id,
+          updates: { status: 'done' },
+        });
+      } else {
+        await supabase
+          .from('appointments')
+          .update({ status: 'done' })
+          .eq('id', appointment.id);
+      }
     }
 
     toast.success('Cirugía finalizada exitosamente');

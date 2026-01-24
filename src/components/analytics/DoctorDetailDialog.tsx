@@ -14,6 +14,38 @@ import { Badge } from '@/components/ui/badge';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Calendar } from '@/components/ui/calendar';
 import { cn } from '@/lib/utils';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+// Types for Tauri commands
+interface DoctorActivityDetail {
+  appointment_id: string;
+  patient_code: string | null;
+  patient_name: string;
+  appointment_type: string;
+  appointment_date: string;
+  is_invoiced: boolean;
+  is_courtesy: boolean;
+  invoice_amount: number;
+  surgery_type: string | null;
+  procedure_type: string | null;
+}
+
+interface ReferredStudy {
+  id: string;
+  title: string | null;
+  eye_side: string | null;
+  created_at: string;
+  patient_code: string | null;
+  patient_first_name: string;
+  patient_last_name: string;
+  files_count: number;
+}
 
 interface DoctorDetailDialogProps {
   open: boolean;
@@ -38,11 +70,23 @@ export function DoctorDetailDialog({
   const [activeTab, setActiveTab] = useState<string>('all');
   const [localStartDate, setLocalStartDate] = useState<Date>(startDate);
   const [localEndDate, setLocalEndDate] = useState<Date>(endDate);
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   // Query para obtener el desglose completo (usando v4 con filtro por sucursal)
   const { data: activityDetail, isLoading } = useQuery({
-    queryKey: ['doctor-activity-detail-v4', doctorId, localStartDate.toISOString(), localEndDate.toISOString(), branchId],
+    queryKey: ['doctor-activity-detail-v4', doctorId, localStartDate.toISOString(), localEndDate.toISOString(), branchId, isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const data = await invoke<DoctorActivityDetail[]>('get_doctor_activity_detail', {
+          startDate: localStartDate.toISOString().split('T')[0],
+          endDate: localEndDate.toISOString().split('T')[0],
+          doctorFilter: doctorId,
+          branchFilter: branchId || null,
+        });
+        return data || [];
+      }
+
       const { data, error } = await supabase.rpc('get_doctor_activity_detail_v4', {
         start_date: localStartDate.toISOString().split('T')[0],
         end_date: localEndDate.toISOString().split('T')[0],
@@ -58,8 +102,29 @@ export function DoctorDetailDialog({
 
   // Query para obtener estudios referidos por este doctor
   const { data: referredStudies } = useQuery({
-    queryKey: ['referred-studies', doctorId, localStartDate.toISOString(), localEndDate.toISOString()],
+    queryKey: ['referred-studies', doctorId, localStartDate.toISOString(), localEndDate.toISOString(), isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        const studies = await invoke<ReferredStudy[]>('get_referred_studies_by_doctor', {
+          doctorId,
+          startDate: localStartDate.toISOString().split('T')[0],
+          endDate: localEndDate.toISOString().split('T')[0],
+        });
+        // Transform to match expected format
+        return (studies || []).map((study) => ({
+          id: study.id,
+          title: study.title,
+          eye_side: study.eye_side,
+          created_at: study.created_at,
+          patient: {
+            first_name: study.patient_first_name,
+            last_name: study.patient_last_name,
+            patient_code: study.patient_code,
+          },
+          study_files: Array(study.files_count).fill({ id: 'dummy' }),
+        }));
+      }
+
       // Primero buscar el referring_doctor_id asociado a este doctor interno
       const { data: refDoc } = await supabase
         .from('referring_doctors')

@@ -2,11 +2,41 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useBranch } from '@/hooks/useBranch';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import { X, Droplet, ChevronDown, ChevronRight, AlertTriangle, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import { invoke } from '@tauri-apps/api/core';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+// Types for Tauri commands
+interface TauriInventoryItem {
+  id: string;
+  name: string;
+  category: string;
+  supplier_id: string | null;
+  branch_id: string;
+  active: boolean;
+  current_stock: number;
+}
+
+interface TauriSupplier {
+  id: string;
+  name: string;
+}
+
+interface TauriInventoryLot {
+  id: string;
+  item_id: string;
+  expiry_date: string | null;
+  quantity: number;
+}
 
 interface StockPanelProps {
   onClose: () => void;
@@ -81,12 +111,57 @@ function DropItem({
 
 export function StockPanel({ onClose, onSelectItem }: StockPanelProps) {
   const { currentBranch } = useBranch();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const [expandedSuppliers, setExpandedSuppliers] = useState<Set<string>>(new Set());
   const [searchTerm, setSearchTerm] = useState('');
 
   const { data: items = [], isLoading } = useQuery({
-    queryKey: ['stock-gotas', currentBranch?.id],
+    queryKey: ['stock-gotas', currentBranch?.id, isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        // Get inventory items, suppliers, and lots separately and combine
+        const [inventoryItems, suppliers, allLots] = await Promise.all([
+          invoke<TauriInventoryItem[]>('get_inventory_items', { branchId: currentBranch!.id }),
+          invoke<TauriSupplier[]>('get_suppliers'),
+          invoke<TauriInventoryLot[]>('get_all_inventory_lots', { branchId: currentBranch!.id })
+        ]);
+
+        // Create lookup maps
+        const suppliersMap = new Map(suppliers.map(s => [s.id, s]));
+        const lotsMap = new Map<string, TauriInventoryLot[]>();
+        allLots.forEach(lot => {
+          const existing = lotsMap.get(lot.item_id) || [];
+          existing.push(lot);
+          lotsMap.set(lot.item_id, existing);
+        });
+
+        // Filter gotas with stock > 0 and combine data
+        const gotasItems = inventoryItems
+          .filter(item => item.category === 'gota' && item.active && item.current_stock > 0)
+          .map(item => {
+            const supplier = item.supplier_id ? suppliersMap.get(item.supplier_id) : null;
+            const itemLots = lotsMap.get(item.id) || [];
+            const validLots = itemLots.filter(lot => lot.quantity > 0 && lot.expiry_date);
+            const sortedLots = validLots.sort((a, b) =>
+              new Date(a.expiry_date!).getTime() - new Date(b.expiry_date!).getTime()
+            );
+            return {
+              id: item.id,
+              name: item.name,
+              current_stock: item.current_stock,
+              min_stock: null as number | null,
+              supplier_id: item.supplier_id,
+              suppliers: supplier ? { id: supplier.id, name: supplier.name } : null,
+              inventory_lots: itemLots.map(l => ({ expiry_date: l.expiry_date, quantity: l.quantity })),
+              nearest_expiry: sortedLots.length > 0 ? sortedLots[0].expiry_date : null
+            } as InventoryItem;
+          })
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        return gotasItems;
+      }
+
       const { data, error } = await supabase
         .from('inventory_items')
         .select(`
@@ -111,11 +186,11 @@ export function StockPanel({ onClose, onSelectItem }: StockPanelProps) {
         .order('name');
 
       if (error) throw error;
-      
+
       // Process items to find nearest expiry date from lots with quantity > 0
       const processedItems = (data as InventoryItem[]).map(item => {
         const validLots = item.inventory_lots?.filter(lot => lot.quantity > 0 && lot.expiry_date) || [];
-        const sortedLots = validLots.sort((a, b) => 
+        const sortedLots = validLots.sort((a, b) =>
           new Date(a.expiry_date!).getTime() - new Date(b.expiry_date!).getTime()
         );
         return {
@@ -123,7 +198,7 @@ export function StockPanel({ onClose, onSelectItem }: StockPanelProps) {
           nearest_expiry: sortedLots.length > 0 ? sortedLots[0].expiry_date : null
         };
       });
-      
+
       return processedItems;
     },
     enabled: !!currentBranch?.id,

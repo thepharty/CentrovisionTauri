@@ -26,6 +26,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { ConsultationViewDialog } from './ConsultationViewDialog';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import { isTauri, getPatients as getPatientsTauri } from '@/lib/dataSource';
+import { invoke } from '@tauri-apps/api/core';
 
 interface Patient {
   id: string;
@@ -107,11 +108,90 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
     enabled: open,
   });
 
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+
   const { data: appointments = [], isLoading: loadingAppointments } = useQuery({
-    queryKey: ['patient-appointments', selectedPatientId],
+    queryKey: ['patient-appointments', selectedPatientId, connectionMode],
     queryFn: async () => {
       if (!selectedPatientId) return [];
-      
+
+      // En modo local, usar Tauri commands
+      if (isLocalMode) {
+        console.log('[PatientsListDialog] Loading appointments from PostgreSQL/SQLite');
+
+        // Get appointments for patient
+        const appointmentsData = await invoke<any[]>('get_appointments', {
+          branchId: null,
+          startDate: null,
+          endDate: null
+        });
+
+        // Filter by patient
+        const patientAppointments = appointmentsData
+          .filter(a => a.patient_id === selectedPatientId)
+          .sort((a, b) => new Date(b.starts_at).getTime() - new Date(a.starts_at).getTime());
+
+        if (patientAppointments.length === 0) return [];
+
+        // Get doctors
+        const doctors = await invoke<any[]>('get_doctors', {});
+        const doctorsMap: Record<string, { full_name: string }> = {};
+        doctors.forEach(d => {
+          doctorsMap[d.user_id] = { full_name: d.full_name };
+        });
+
+        // Get encounters for appointments
+        const encountersMap: Record<string, string> = {};
+        for (const apt of patientAppointments) {
+          try {
+            const encounter = await invoke<any>('get_encounter_by_appointment', {
+              appointmentId: apt.id
+            });
+            if (encounter) {
+              encountersMap[apt.id] = encounter.id;
+            }
+          } catch {
+            // No encounter for this appointment
+          }
+        }
+
+        // Get invoices for appointments
+        const invoicesMap: Record<string, { total_amount: number; status: string }> = {};
+        for (const apt of patientAppointments) {
+          try {
+            const invoice = await invoke<any>('get_invoice_by_appointment', {
+              appointmentId: apt.id
+            });
+            if (invoice) {
+              invoicesMap[apt.id] = {
+                total_amount: invoice.total_amount,
+                status: invoice.status
+              };
+            }
+          } catch {
+            // No invoice for this appointment
+          }
+        }
+
+        // Get branches
+        const branches = await invoke<any[]>('get_branches');
+        const branchesMap: Record<string, string> = {};
+        branches.forEach(b => {
+          branchesMap[b.id] = b.name;
+        });
+
+        // Combine data
+        return patientAppointments.map(apt => ({
+          ...apt,
+          doctor: apt.doctor_id ? doctorsMap[apt.doctor_id] : undefined,
+          encounter_id: encountersMap[apt.id],
+          invoice_amount: invoicesMap[apt.id]?.total_amount,
+          invoice_status: invoicesMap[apt.id]?.status,
+          branch_name: apt.branch_id ? branchesMap[apt.branch_id] : undefined
+        })) as Appointment[];
+      }
+
+      // En modo supabase (cloud)
       // First get appointments
       const { data: appointmentsData, error: appointmentsError } = await supabase
         .from('appointments')
@@ -124,7 +204,7 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
 
       // Get unique doctor IDs
       const doctorIds = [...new Set(appointmentsData.map(a => a.doctor_id).filter(Boolean))];
-      
+
       // Fetch doctor profiles
       let doctorsMap: Record<string, { full_name: string }> = {};
       if (doctorIds.length > 0) {
@@ -132,7 +212,7 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
           .from('profiles')
           .select('user_id, full_name')
           .in('user_id', doctorIds);
-        
+
         if (doctorsData) {
           doctorsMap = doctorsData.reduce((acc, d) => ({
             ...acc,
@@ -149,7 +229,7 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
           .from('encounters')
           .select('id, appointment_id')
           .in('appointment_id', appointmentIds);
-        
+
         if (encountersData) {
           encountersMap = encountersData.reduce((acc, e) => ({
             ...acc,
@@ -165,13 +245,13 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
           .from('invoices')
           .select('appointment_id, total_amount, status')
           .in('appointment_id', appointmentIds);
-        
+
         if (invoicesData) {
           invoicesMap = invoicesData.reduce((acc, inv) => ({
             ...acc,
-            [inv.appointment_id!]: { 
-              total_amount: inv.total_amount, 
-              status: inv.status 
+            [inv.appointment_id!]: {
+              total_amount: inv.total_amount,
+              status: inv.status
             }
           }), {});
         }
@@ -256,6 +336,29 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
     if (!deletePatientId) return;
 
     try {
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        // El CASCADE en PostgreSQL local eliminará registros relacionados
+        // Los archivos locales se mantendrán (no se puede eliminar de SMB fácilmente)
+        await invoke('delete_patient', { id: deletePatientId });
+
+        toast({
+          title: 'Paciente eliminado',
+          description: 'El paciente y sus registros han sido eliminados.',
+        });
+
+        queryClient.invalidateQueries({ queryKey: ['patients-list'] });
+
+        if (selectedPatientId === deletePatientId) {
+          setSelectedPatientId(null);
+        }
+
+        setShowSecondWarning(false);
+        setDeletePatientId(null);
+        return;
+      }
+
+      // Modo Supabase
       // 1. Get all encounters for this patient first
       const { data: encounters } = await supabase
         .from('encounters')
@@ -264,14 +367,14 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
 
       const encounterIds = encounters?.map(e => e.id) || [];
       const filePaths: string[] = [];
-      
+
       // Get documents from encounters
       if (encounterIds.length > 0) {
         const { data: documents } = await supabase
           .from('documents')
           .select('file_path')
           .in('encounter_id', encounterIds);
-        
+
         if (documents) filePaths.push(...documents.map(d => d.file_path));
 
         // Get orders from encounters
@@ -279,34 +382,34 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
           .from('orders')
           .select('id')
           .in('encounter_id', encounterIds);
-        
+
         const orderIds = orders?.map(o => o.id) || [];
-        
+
         // Get results files from orders
         if (orderIds.length > 0) {
           const { data: results } = await supabase
             .from('results')
             .select('file_path')
             .in('order_id', orderIds);
-          
+
           if (results) filePaths.push(...results.map(r => r.file_path));
         }
       }
-      
+
       // Get study files directly from patient
       const { data: studies } = await supabase
         .from('studies')
         .select('id')
         .eq('patient_id', deletePatientId);
-      
+
       const studyIds = studies?.map(s => s.id) || [];
-      
+
       if (studyIds.length > 0) {
         const { data: studyFiles } = await supabase
           .from('study_files')
           .select('file_path')
           .in('study_id', studyIds);
-        
+
         if (studyFiles) filePaths.push(...studyFiles.map(sf => sf.file_path));
       }
 
@@ -316,7 +419,7 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
           // Extract bucket and path from the file_path
           const bucket = filePath.split('/')[0];
           const path = filePath.substring(bucket.length + 1);
-          
+
           await supabase.storage
             .from(bucket)
             .remove([path]);
@@ -340,7 +443,7 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
 
       // Refresh the patients list
       queryClient.invalidateQueries({ queryKey: ['patients-list'] });
-      
+
       // Clear selection if deleted patient was selected
       if (selectedPatientId === deletePatientId) {
         setSelectedPatientId(null);
@@ -375,6 +478,36 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
     if (!editedPatient || !viewPatientDetailsId) return;
 
     try {
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        await invoke('update_patient', {
+          id: viewPatientDetailsId,
+          patient: {
+            first_name: editedPatient.first_name,
+            last_name: editedPatient.last_name,
+            code: editedPatient.code,
+            dob: editedPatient.dob,
+            phone: editedPatient.phone,
+            email: editedPatient.email,
+            address: editedPatient.address,
+            occupation: editedPatient.occupation,
+          }
+        });
+
+        toast({
+          title: 'Paciente actualizado',
+          description: 'Los datos del paciente se han guardado correctamente.',
+        });
+
+        queryClient.invalidateQueries({ queryKey: ['patients-list'] });
+        queryClient.invalidateQueries({ queryKey: ['patients-search'] });
+
+        setIsEditingPatient(false);
+        setEditedPatient(null);
+        return;
+      }
+
+      // Modo Supabase
       const { error } = await supabase
         .from('patients')
         .update({
@@ -399,18 +532,18 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
       // Refresh patients list
       queryClient.invalidateQueries({ queryKey: ['patients-list'] });
       queryClient.invalidateQueries({ queryKey: ['patients-search'] });
-      
+
       setIsEditingPatient(false);
       setEditedPatient(null);
     } catch (error: any) {
       console.error('Error updating patient:', error);
-      
+
       // Detectar si es un error de autenticación/sesión expirada
-      const isAuthError = error?.message?.includes('refresh') || 
+      const isAuthError = error?.message?.includes('refresh') ||
                           error?.message?.includes('token') ||
                           error?.code === 'refresh_token_not_found' ||
                           error?.__isAuthError;
-      
+
       if (isAuthError) {
         toast({
           title: 'Sesión expirada',

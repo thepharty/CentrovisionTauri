@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -24,6 +26,11 @@ import { useBranch } from '@/hooks/useBranch';
 import { InventoryMovementsReport } from './InventoryMovementsReport';
 import jsPDF from 'jspdf';
 
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
 interface EntryData {
   productName: string;
   productCode: string;
@@ -35,6 +42,8 @@ interface EntryData {
 export default function InventoryMovements() {
   const queryClient = useQueryClient();
   const { currentBranch } = useBranch();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const [showForm, setShowForm] = useState(false);
   const [showReportDialog, setShowReportDialog] = useState(false);
   const [searchProduct, setSearchProduct] = useState('');
@@ -55,9 +64,21 @@ export default function InventoryMovements() {
   // Buscar productos
   // Buscar productos (filtrado por sucursal actual)
   const { data: products } = useQuery({
-    queryKey: ['inventory-search', searchProduct, currentBranch?.id],
+    queryKey: ['inventory-search', searchProduct, currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!searchProduct || searchProduct.length < 2 || !currentBranch?.id) return [];
+
+      if (isLocalMode) {
+        // En modo local, obtener todos y filtrar client-side
+        const allItems = await invoke<any[]>('get_inventory_items', { branchId: currentBranch.id });
+        const searchLower = searchProduct.toLowerCase();
+        return allItems
+          .filter(item => item.active !== false &&
+            (item.name?.toLowerCase().includes(searchLower) ||
+             item.code?.toLowerCase().includes(searchLower)))
+          .slice(0, 10);
+      }
+
       const { data } = await supabase
         .from('inventory_items')
         .select('*')
@@ -88,9 +109,14 @@ export default function InventoryMovements() {
 
   // Obtener lotes del producto seleccionado
   const { data: lots } = useQuery({
-    queryKey: ['product-lots', selectedProduct?.id],
+    queryKey: ['product-lots', selectedProduct?.id, isLocalMode],
     queryFn: async () => {
       if (!selectedProduct) return [];
+
+      if (isLocalMode) {
+        return await invoke<any[]>('get_inventory_lots', { itemId: selectedProduct.id });
+      }
+
       const { data } = await supabase
         .from('inventory_lots')
         .select('*')
@@ -103,10 +129,17 @@ export default function InventoryMovements() {
 
   // Historial de movimientos
   const { data: movements } = useQuery({
-    queryKey: ['inventory-movements', currentBranch?.id],
+    queryKey: ['inventory-movements', currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!currentBranch?.id) return [];
-      
+
+      if (isLocalMode) {
+        return await invoke<any[]>('get_inventory_movements', {
+          branchId: currentBranch.id,
+          limit: 50
+        });
+      }
+
       const { data } = await supabase
         .from('inventory_movements')
         .select(`
@@ -198,25 +231,31 @@ export default function InventoryMovements() {
     mutationFn: async () => {
       if (!selectedProduct) throw new Error('Seleccione un producto');
       if (!quantity || Number(quantity) === 0) throw new Error('Ingrese una cantidad válida');
-      
+
       if (selectedProduct.requires_lot && movementType !== 'ajuste' && !selectedLot) {
         throw new Error('Este producto requiere seleccionar un lote');
       }
 
-      const { error } = await supabase
-        .from('inventory_movements')
-        .insert({
-          branch_id: currentBranch?.id || '',
-          item_id: selectedProduct.id,
-          lot_id: selectedLot || null,
-          movement_type: movementType,
-          quantity: Number(quantity),
-          reference_type: referenceType || null,
-          notes: notes || null,
-        });
+      const movementData = {
+        branch_id: currentBranch?.id || '',
+        item_id: selectedProduct.id,
+        lot_id: selectedLot || null,
+        movement_type: movementType,
+        quantity: Number(quantity),
+        reference_type: referenceType || null,
+        notes: notes || null,
+      };
 
-      if (error) throw error;
-      
+      if (isLocalMode) {
+        await invoke('create_inventory_movement', { movement: movementData });
+      } else {
+        const { error } = await supabase
+          .from('inventory_movements')
+          .insert(movementData);
+
+        if (error) throw error;
+      }
+
       // Retornar datos para usar en onSuccess
       return {
         isEntry: movementType === 'entrada',

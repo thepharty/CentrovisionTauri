@@ -5,11 +5,24 @@ import { es } from 'date-fns/locale';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SidebarTrigger } from '@/components/ui/sidebar';
 import { useAuth } from '@/hooks/useAuth';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import { useState } from 'react';
 import { AppointmentDialog } from './AppointmentDialog';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { SyncIndicator } from '@/components/SyncIndicator';
+import { invoke } from '@tauri-apps/api/core';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+interface Profile {
+  id: string;
+  user_id: string;
+  full_name: string | null;
+}
 
 interface DashboardHeaderProps {
   currentDate: Date;
@@ -30,12 +43,19 @@ const ROLE_LABELS: Record<string, string> = {
 
 export function DashboardHeader({ currentDate, view, onViewChange, onDateChange, onNewAppointment, onSearchPatients }: DashboardHeaderProps) {
   const { signOut, user, role, hasRole, isLoggingOut } = useAuth();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const [showAppointmentDialog, setShowAppointmentDialog] = useState(false);
 
   const { data: profile } = useQuery({
-    queryKey: ['user-profile', user?.id],
+    queryKey: ['user-profile', user?.id, isLocalMode],
     queryFn: async () => {
       if (!user?.id) return null;
+      if (isLocalMode) {
+        const profiles = await invoke<Profile[]>('get_doctors');
+        const userProfile = profiles.find(p => p.user_id === user.id);
+        return userProfile ? { full_name: userProfile.full_name } : null;
+      }
       const { data } = await supabase
         .from('profiles')
         .select('full_name')

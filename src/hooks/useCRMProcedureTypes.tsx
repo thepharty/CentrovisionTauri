@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
 
 export interface CRMProcedureType {
   id: string;
@@ -11,10 +13,25 @@ export interface CRMProcedureType {
   created_at: string;
 }
 
+// Check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
 export const useCRMProcedureTypes = () => {
+  const { connectionMode } = useNetworkStatus();
+
   return useQuery({
-    queryKey: ['crm-procedure-types'],
+    queryKey: ['crm-procedure-types', connectionMode],
     queryFn: async () => {
+      // En modo local, usar Tauri command
+      if ((connectionMode === 'local' || connectionMode === 'offline') && isTauri()) {
+        console.log('[useCRMProcedureTypes] Loading from PostgreSQL local');
+        const data = await invoke<CRMProcedureType[]>('get_crm_procedure_types');
+        return data;
+      }
+
+      // En modo Supabase
       const { data, error } = await supabase
         .from('crm_procedure_types')
         .select('*')

@@ -5,6 +5,13 @@ import { toast } from "sonner";
 import { toClinicTime } from "@/lib/timezone";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
+import { useNetworkStatus } from "@/hooks/useNetworkStatus";
+import { invoke } from "@tauri-apps/api/core";
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 
 interface BlockManagementDialogProps {
   block: any | null;
@@ -14,15 +21,21 @@ interface BlockManagementDialogProps {
 
 export function BlockManagementDialog({ block, open, onClose }: BlockManagementDialogProps) {
   const queryClient = useQueryClient();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   const deleteMutation = useMutation({
     mutationFn: async (blockId: string) => {
-      const { error } = await supabase
-        .from('schedule_blocks')
-        .delete()
-        .eq('id', blockId);
-      
-      if (error) throw error;
+      if (isLocalMode) {
+        await invoke('delete_schedule_block', { id: blockId });
+      } else {
+        const { error } = await supabase
+          .from('schedule_blocks')
+          .delete()
+          .eq('id', blockId);
+
+        if (error) throw error;
+      }
     },
     onSuccess: () => {
       toast.success('Bloqueo eliminado correctamente');

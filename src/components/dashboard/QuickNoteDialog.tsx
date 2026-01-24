@@ -16,6 +16,13 @@ import { supabase } from '@/integrations/supabase/client';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useAuth } from '@/hooks/useAuth';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 
 interface QuickNoteDialogProps {
   appointment: Appointment | null;
@@ -27,6 +34,8 @@ export function QuickNoteDialog({ appointment, open, onClose }: QuickNoteDialogP
   const [note, setNote] = useState('');
   const queryClient = useQueryClient();
   const { role } = useAuth();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
   useEffect(() => {
     if (appointment && open) {
@@ -37,13 +46,20 @@ export function QuickNoteDialog({ appointment, open, onClose }: QuickNoteDialogP
   const updateNoteMutation = useMutation({
     mutationFn: async (newNote: string) => {
       if (!appointment) return;
-      
-      const { error } = await supabase
-        .from('appointments')
-        .update({ reception_notes: newNote || null })
-        .eq('id', appointment.id);
 
-      if (error) throw error;
+      if (isLocalMode) {
+        await invoke('update_appointment', {
+          id: appointment.id,
+          update: { reception_notes: newNote || null }
+        });
+      } else {
+        const { error } = await supabase
+          .from('appointments')
+          .update({ reception_notes: newNote || null })
+          .eq('id', appointment.id);
+
+        if (error) throw error;
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['appointments'] });

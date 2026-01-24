@@ -3,6 +3,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
 import { useBranch } from '@/hooks/useBranch';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -24,6 +31,8 @@ import { toast } from 'sonner';
 export default function PaymentsHistory() {
   const { hasRole } = useAuth();
   const { currentBranch } = useBranch();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const queryClient = useQueryClient();
   const [searchTerm, setSearchTerm] = useState('');
   const [methodFilter, setMethodFilter] = useState<string>('all');
@@ -36,6 +45,12 @@ export default function PaymentsHistory() {
 
   const deleteMutation = useMutation({
     mutationFn: async (paymentId: string) => {
+      if (isLocalMode) {
+        // En modo local, usar el comando Tauri (delete_payment ya recalcula el balance)
+        await invoke('delete_payment', { id: paymentId });
+        return { paymentId };
+      }
+
       // 1. Obtener información del pago antes de eliminarlo
       const { data: payment, error: fetchError } = await supabase
         .from('payments')
@@ -99,10 +114,37 @@ export default function PaymentsHistory() {
   });
 
   const { data: payments, isLoading } = useQuery({
-    queryKey: ['payments-history', methodFilter, dateFrom, dateTo, currentBranch?.id],
+    queryKey: ['payments-history', methodFilter, dateFrom, dateTo, currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!currentBranch?.id) return [];
-      
+
+      if (isLocalMode) {
+        // En modo local, usar el comando Tauri
+        const startDate = dateFrom || '2020-01-01';
+        const endDate = dateTo || new Date().toISOString().split('T')[0];
+        const data = await invoke<any[]>('get_payments_by_date_range', {
+          branchId: currentBranch.id,
+          startDate,
+          endDate,
+        });
+
+        // Filtrar por método y mapear a formato esperado
+        let filtered = data || [];
+        if (methodFilter !== 'all') {
+          filtered = filtered.filter(p => p.payment_method === methodFilter);
+        }
+
+        // Mapear invoice.patient a invoices.patients para compatibilidad
+        return filtered.map(p => ({
+          ...p,
+          invoices: p.invoice ? {
+            invoice_number: p.invoice.invoice_number,
+            branch_id: currentBranch.id,
+            patients: p.invoice.patient
+          } : null
+        }));
+      }
+
       let query = supabase
         .from('payments')
         .select(`

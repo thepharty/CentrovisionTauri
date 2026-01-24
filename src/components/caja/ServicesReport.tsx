@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
 import { useBranch } from "@/hooks/useBranch";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,18 +17,37 @@ import { clinicNow } from "@/lib/timezone";
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
 export function ServicesReport() {
   const { currentBranch } = useBranch();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const [dateFrom, setDateFrom] = useState(format(clinicNow(), "yyyy-MM-dd"));
   const [dateTo, setDateTo] = useState(format(clinicNow(), "yyyy-MM-dd"));
   const [serviceTypeFilter, setServiceTypeFilter] = useState<string>("todos");
   const [searchTerm, setSearchTerm] = useState("");
 
   const { data: services, isLoading, refetch } = useQuery({
-    queryKey: ['services-report', dateFrom, dateTo, currentBranch?.id],
+    queryKey: ['services-report', dateFrom, dateTo, currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!currentBranch?.id) return [];
-      
+
+      // Modo local: usar Tauri command
+      if (isLocalMode) {
+        const startDate = `${dateFrom}T00:00:00`;
+        const endDate = `${dateTo}T23:59:59`;
+        return await invoke<any[]>('get_services_report', {
+          branchId: currentBranch.id,
+          startDate,
+          endDate,
+        });
+      }
+
+      // Modo online: Supabase queries
       // Primera query: invoice_items
       const { data: items, error: itemsError } = await supabase
         .from('invoice_items')
@@ -47,31 +68,31 @@ export function ServicesReport() {
 
       if (itemsError) throw itemsError;
       if (!items) return [];
-      
+
       // Segunda query: service_prices si hay item_ids
       const itemIds = items
         .map(i => i.item_id)
         .filter((id): id is string => id !== null);
-      
+
       let servicesData: any[] = [];
       if (itemIds.length > 0) {
         const { data: services, error: svcError } = await supabase
           .from('service_prices')
           .select('id, service_name, service_type')
           .in('id', itemIds);
-        
+
         if (!svcError && services) {
           servicesData = services;
         }
       }
-      
+
       // Combinar datos
       return items.map((item: any) => {
         const serviceItem = servicesData.find(svc => svc.id === item.item_id);
         const firstName = item.invoices?.patients?.first_name || '';
         const lastName = item.invoices?.patients?.last_name || '';
         const patientName = `${firstName} ${lastName}`.trim() || 'Sin paciente';
-        
+
         return {
           invoice_number: item.invoices.invoice_number,
           created_at: item.invoices.created_at,

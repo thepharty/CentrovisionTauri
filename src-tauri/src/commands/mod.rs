@@ -17,6 +17,39 @@ pub struct Branch {
     pub address: Option<String>,
     pub phone: Option<String>,
     pub active: bool,
+    pub theme_primary_hsl: Option<String>,
+    pub pdf_header_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BranchInput {
+    pub name: String,
+    pub address: Option<String>,
+    pub phone: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BranchUpdate {
+    pub name: Option<String>,
+    pub address: Option<String>,
+    pub phone: Option<String>,
+    pub active: Option<bool>,
+    pub theme_primary_hsl: Option<String>,
+    pub pdf_header_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RoomInput {
+    pub name: String,
+    pub kind: String,
+    pub branch_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RoomUpdate {
+    pub name: Option<String>,
+    pub kind: Option<String>,
+    pub active: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -43,6 +76,29 @@ pub struct UserRole {
     pub id: String,
     pub user_id: String,
     pub role: String,
+}
+
+// For Admin panel - user with profile and roles
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UserWithProfile {
+    pub user_id: String,
+    pub email: String,
+    pub full_name: String,
+    pub roles: Vec<String>,
+    pub specialty: Option<String>,
+    pub created_at: String,
+    pub is_visible_in_dashboard: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PendingRegistration {
+    pub id: String,
+    pub email: String,
+    pub full_name: String,
+    pub role: String,
+    pub specialty: Option<String>,
+    pub status: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -176,7 +232,7 @@ pub async fn get_branches(
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
 
     let mut stmt = conn
-        .prepare("SELECT id, name, code, address, phone, active FROM branches WHERE active = 1 ORDER BY code")
+        .prepare("SELECT id, name, code, address, phone, active, theme_primary_hsl, pdf_header_url FROM branches ORDER BY code")
         .map_err(|e| e.to_string())?;
 
     let branches = stmt
@@ -188,6 +244,8 @@ pub async fn get_branches(
                 address: row.get(3)?,
                 phone: row.get(4)?,
                 active: row.get::<_, i32>(5)? == 1,
+                theme_primary_hsl: row.get(6)?,
+                pdf_header_url: row.get(7)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -195,6 +253,46 @@ pub async fn get_branches(
         .collect();
 
     Ok(branches)
+}
+
+// Create a new branch
+#[tauri::command]
+pub async fn create_branch(
+    app_state: State<'_, Arc<AppState>>,
+    input: BranchInput,
+) -> Result<Branch, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("create_branch: Using local PostgreSQL");
+        return pool.create_branch(&input).await;
+    }
+    Err("Offline mode not supported for this operation".to_string())
+}
+
+// Update an existing branch
+#[tauri::command]
+pub async fn update_branch(
+    app_state: State<'_, Arc<AppState>>,
+    id: String,
+    update: BranchUpdate,
+) -> Result<Branch, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("update_branch: Using local PostgreSQL");
+        return pool.update_branch(&id, &update).await;
+    }
+    Err("Offline mode not supported for this operation".to_string())
+}
+
+// Delete a branch and its rooms
+#[tauri::command]
+pub async fn delete_branch(
+    app_state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("delete_branch: Using local PostgreSQL");
+        return pool.delete_branch(&id).await;
+    }
+    Err("Offline mode not supported for this operation".to_string())
 }
 
 // ============================================================
@@ -218,7 +316,7 @@ pub async fn get_rooms(
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
 
     let mut stmt = conn
-        .prepare("SELECT id, name, kind, branch_id, active FROM rooms WHERE branch_id = ? AND active = 1")
+        .prepare("SELECT id, name, kind, branch_id, active FROM rooms WHERE branch_id = ? ORDER BY name")
         .map_err(|e| e.to_string())?;
 
     let rooms = stmt
@@ -236,6 +334,69 @@ pub async fn get_rooms(
         .collect();
 
     Ok(rooms)
+}
+
+// Get all rooms (for counting active rooms per branch)
+#[tauri::command]
+pub async fn get_all_rooms(
+    db: State<'_, Arc<Database>>,
+    app_state: State<'_, Arc<AppState>>,
+) -> Result<Vec<Room>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_all_rooms: Using local PostgreSQL");
+        return pool.get_all_rooms().await;
+    }
+
+    // Fallback to SQLite cache
+    log::info!("get_all_rooms: Using SQLite cache");
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+
+    let mut stmt = conn
+        .prepare("SELECT id, name, kind, branch_id, active FROM rooms ORDER BY name")
+        .map_err(|e| e.to_string())?;
+
+    let rooms = stmt
+        .query_map([], |row| {
+            Ok(Room {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                kind: row.get(2)?,
+                branch_id: row.get(3)?,
+                active: row.get::<_, i32>(4)? == 1,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(rooms)
+}
+
+// Create a new room
+#[tauri::command]
+pub async fn create_room(
+    app_state: State<'_, Arc<AppState>>,
+    input: RoomInput,
+) -> Result<Room, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("create_room: Using local PostgreSQL");
+        return pool.create_room(&input).await;
+    }
+    Err("Offline mode not supported for this operation".to_string())
+}
+
+// Update an existing room
+#[tauri::command]
+pub async fn update_room(
+    app_state: State<'_, Arc<AppState>>,
+    id: String,
+    update: RoomUpdate,
+) -> Result<Room, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("update_room: Using local PostgreSQL");
+        return pool.update_room(&id, &update).await;
+    }
+    Err("Offline mode not supported for this operation".to_string())
 }
 
 // ============================================================
@@ -476,6 +637,46 @@ pub async fn get_doctors(
 }
 
 #[tauri::command]
+pub async fn get_profile_by_user_id(
+    db: State<'_, Arc<Database>>,
+    app_state: State<'_, Arc<AppState>>,
+    user_id: String,
+) -> Result<Option<Profile>, String> {
+    // Check if we should use local PostgreSQL
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_profile_by_user_id: Using local PostgreSQL for user: {}", user_id);
+        return pool.get_profile_by_user_id(&user_id).await;
+    }
+
+    // Fallback to SQLite cache
+    log::info!("get_profile_by_user_id: Using SQLite cache");
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, user_id, full_name, email, specialty, is_visible_in_dashboard
+             FROM profiles
+             WHERE user_id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let profile = stmt
+        .query_row([&user_id], |row| {
+            Ok(Profile {
+                id: row.get(0)?,
+                user_id: row.get(1)?,
+                full_name: row.get(2)?,
+                email: row.get(3)?,
+                specialty: row.get(4)?,
+                is_visible_in_dashboard: row.get::<_, i32>(5)? == 1,
+            })
+        })
+        .ok();
+
+    Ok(profile)
+}
+
+#[tauri::command]
 pub async fn get_user_roles(
     db: State<'_, Arc<Database>>,
     app_state: State<'_, Arc<AppState>>,
@@ -502,6 +703,73 @@ pub async fn get_user_roles(
         .collect();
 
     Ok(roles)
+}
+
+// Get all users with their profiles and roles (for Admin panel)
+#[tauri::command]
+pub async fn get_all_users_with_profiles(
+    app_state: State<'_, Arc<AppState>>,
+) -> Result<Vec<UserWithProfile>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_all_users_with_profiles: Using local PostgreSQL");
+        return pool.get_all_users_with_profiles().await;
+    }
+    Err("Offline mode not supported for this operation".to_string())
+}
+
+// Get pending registrations (for Admin panel)
+#[tauri::command]
+pub async fn get_pending_registrations(
+    app_state: State<'_, Arc<AppState>>,
+) -> Result<Vec<PendingRegistration>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_pending_registrations: Using local PostgreSQL");
+        return pool.get_pending_registrations().await;
+    }
+    Err("Offline mode not supported for this operation".to_string())
+}
+
+// Add a role to a user
+#[tauri::command]
+pub async fn add_user_role(
+    app_state: State<'_, Arc<AppState>>,
+    user_id: String,
+    role: String,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("add_user_role: Using local PostgreSQL");
+        return pool.add_user_role(&user_id, &role).await;
+    }
+    Err("Offline mode not supported for this operation".to_string())
+}
+
+// Update user visibility in dashboard
+#[tauri::command]
+pub async fn update_profile_visibility(
+    app_state: State<'_, Arc<AppState>>,
+    user_id: String,
+    is_visible: bool,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("update_profile_visibility: Using local PostgreSQL");
+        return pool.update_profile_visibility(&user_id, is_visible).await;
+    }
+    Err("Offline mode not supported for this operation".to_string())
+}
+
+// Update user specialty/gender
+#[tauri::command]
+pub async fn update_profile_doctor_info(
+    app_state: State<'_, Arc<AppState>>,
+    user_id: String,
+    specialty: Option<String>,
+    gender: Option<String>,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("update_profile_doctor_info: Using local PostgreSQL");
+        return pool.update_profile_doctor_info(&user_id, specialty, gender).await;
+    }
+    Err("Offline mode not supported for this operation".to_string())
 }
 
 // ============================================================
@@ -754,6 +1022,40 @@ pub async fn update_patient(
     log::info!("Updated patient {} locally, added to sync queue", id);
 
     Ok(patient)
+}
+
+// ============================================================
+// COMMANDS - DELETE PATIENT
+// ============================================================
+
+#[tauri::command]
+pub async fn delete_patient(
+    db: State<'_, Arc<Database>>,
+    app_state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<(), String> {
+    // Check if we should use local PostgreSQL
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("delete_patient: Using local PostgreSQL");
+        return pool.delete_patient(&id).await;
+    }
+
+    // Fallback to SQLite (with sync queue)
+    log::info!("delete_patient: Using SQLite with sync queue");
+
+    {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM patients WHERE id = ?", [&id])
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Add to sync queue
+    db.add_to_sync_queue("patients", &id, "DELETE", "{}")
+        .map_err(|e| e.to_string())?;
+
+    log::info!("Deleted patient {} locally, added to sync queue", id);
+
+    Ok(())
 }
 
 // ============================================================
@@ -1576,6 +1878,42 @@ pub async fn delete_surgery(
     Err("No database connection available".to_string())
 }
 
+#[tauri::command]
+pub async fn delete_surgery_file(
+    db: State<'_, Database>,
+    app_state: State<'_, Arc<AppState>>,
+    file_id: String,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("delete_surgery_file: Using local PostgreSQL");
+        pool.delete_surgery_file(&file_id).await?;
+        // Add to sync queue for later Supabase sync
+        db.add_to_sync_queue("surgery_files", &file_id, "DELETE", "{}")
+            .map_err(|e| e.to_string())?;
+        log::info!("Added surgery_file {} deletion to sync queue", file_id);
+        return Ok(());
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn delete_study_file(
+    db: State<'_, Database>,
+    app_state: State<'_, Arc<AppState>>,
+    file_id: String,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("delete_study_file: Using local PostgreSQL");
+        pool.delete_study_file(&file_id).await?;
+        // Add to sync queue for later Supabase sync
+        db.add_to_sync_queue("study_files", &file_id, "DELETE", "{}")
+            .map_err(|e| e.to_string())?;
+        log::info!("Added study_file {} deletion to sync queue", file_id);
+        return Ok(());
+    }
+    Err("No database connection available".to_string())
+}
+
 // ============================================================
 // COMMANDS - PROCEDURES
 // ============================================================
@@ -1810,6 +2148,18 @@ pub async fn get_invoice_by_id(
 }
 
 #[tauri::command]
+pub async fn get_invoice_by_appointment(
+    app_state: State<'_, Arc<AppState>>,
+    appointment_id: String,
+) -> Result<Option<Invoice>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_invoice_by_appointment: Using local PostgreSQL");
+        return pool.get_invoice_by_appointment(&appointment_id).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
 pub async fn create_invoice(
     app_state: State<'_, Arc<AppState>>,
     invoice: InvoiceInput,
@@ -1843,6 +2193,19 @@ pub async fn get_invoice_items(
     if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
         log::info!("get_invoice_items: Using local PostgreSQL");
         return pool.get_invoice_items(&invoice_id).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn get_pending_invoices_by_branch(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+    date_filter: Option<String>, // "today", "week", or null for all
+) -> Result<Vec<Invoice>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_pending_invoices_by_branch: Using local PostgreSQL");
+        return pool.get_pending_invoices_by_branch(&branch_id, date_filter.as_deref()).await;
     }
     Err("No database connection available".to_string())
 }
@@ -2105,6 +2468,439 @@ pub async fn get_suppliers(
     Err("No database connection available".to_string())
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SupplierInput {
+    pub name: String,
+}
+
+#[tauri::command]
+pub async fn create_supplier(
+    app_state: State<'_, Arc<AppState>>,
+    supplier: SupplierInput,
+) -> Result<Supplier, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("create_supplier: Using local PostgreSQL");
+        return pool.create_supplier(&supplier).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+// ============================================================
+// INVENTORY LOTS - TYPES
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InventoryLot {
+    pub id: String,
+    pub item_id: String,
+    pub lot_number: String,
+    pub expiration_date: Option<String>,
+    pub quantity: f64,
+    pub created_at: String,
+}
+
+#[tauri::command]
+pub async fn get_inventory_lots(
+    app_state: State<'_, Arc<AppState>>,
+    item_id: String,
+) -> Result<Vec<InventoryLot>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_inventory_lots: Using local PostgreSQL");
+        return pool.get_inventory_lots(&item_id).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InventoryLotWithProduct {
+    pub id: String,
+    pub item_id: String,
+    pub lot_number: String,
+    pub expiry_date: Option<String>,
+    pub quantity: f64,
+    pub cost_price: Option<f64>,
+    pub created_at: String,
+    pub inventory_items: Option<InventoryItemEmbed>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InventoryLotInput {
+    pub item_id: String,
+    pub lot_number: String,
+    pub quantity: f64,
+    pub expiry_date: Option<String>,
+    pub cost_price: Option<f64>,
+}
+
+#[tauri::command]
+pub async fn get_all_inventory_lots(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+) -> Result<Vec<InventoryLotWithProduct>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_all_inventory_lots: Using local PostgreSQL");
+        return pool.get_all_inventory_lots(&branch_id).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn create_inventory_lot(
+    app_state: State<'_, Arc<AppState>>,
+    lot: InventoryLotInput,
+) -> Result<InventoryLot, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("create_inventory_lot: Using local PostgreSQL");
+        return pool.create_inventory_lot(&lot).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+// ============================================================
+// INVENTORY MOVEMENTS - TYPES
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InventoryItemEmbed {
+    pub name: String,
+    pub code: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InventoryLotEmbed {
+    pub lot_number: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InventoryMovement {
+    pub id: String,
+    pub branch_id: String,
+    pub item_id: String,
+    pub lot_id: Option<String>,
+    pub movement_type: String,
+    pub quantity: f64,
+    pub reference_type: Option<String>,
+    pub reference_id: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub inventory_items: Option<InventoryItemEmbed>,
+    pub inventory_lots: Option<InventoryLotEmbed>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InventoryMovementInput {
+    pub branch_id: String,
+    pub item_id: String,
+    pub lot_id: Option<String>,
+    pub movement_type: String,
+    pub quantity: f64,
+    pub reference_type: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[tauri::command]
+pub async fn get_inventory_movements(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+    limit: Option<i32>,
+) -> Result<Vec<InventoryMovement>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_inventory_movements: Using local PostgreSQL");
+        return pool.get_inventory_movements(&branch_id, limit.unwrap_or(50)).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn create_inventory_movement(
+    app_state: State<'_, Arc<AppState>>,
+    movement: InventoryMovementInput,
+) -> Result<InventoryMovement, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("create_inventory_movement: Using local PostgreSQL");
+        return pool.create_inventory_movement(&movement).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+// ============================================================
+// CASH CLOSURE REPORTS - TYPES
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ServiceSales {
+    pub service_type: String,
+    pub cantidad: i64,
+    pub total: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ServiceDetail {
+    pub service_name: String,
+    pub service_type: String,
+    pub cantidad: i64,
+    pub total: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InventorySales {
+    pub category: String,
+    pub cantidad: i64,
+    pub total: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InventoryDetail {
+    pub category: String,
+    pub product_name: String,
+    pub cantidad: i64,
+    pub total: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PaymentMethodSummary {
+    pub payment_method: String,
+    pub cantidad: i64,
+    pub total: f64,
+}
+
+#[tauri::command]
+pub async fn get_service_sales(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+    start_date: String,
+    end_date: String,
+) -> Result<Vec<ServiceSales>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_service_sales: Using local PostgreSQL");
+        return pool.get_service_sales(&branch_id, &start_date, &end_date).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn get_service_details(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+    start_date: String,
+    end_date: String,
+) -> Result<Vec<ServiceDetail>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_service_details: Using local PostgreSQL");
+        return pool.get_service_details(&branch_id, &start_date, &end_date).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn get_inventory_sales(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+    start_date: String,
+    end_date: String,
+) -> Result<Vec<InventorySales>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_inventory_sales: Using local PostgreSQL");
+        return pool.get_inventory_sales(&branch_id, &start_date, &end_date).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn get_inventory_details(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+    start_date: String,
+    end_date: String,
+) -> Result<Vec<InventoryDetail>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_inventory_details: Using local PostgreSQL");
+        return pool.get_inventory_details(&branch_id, &start_date, &end_date).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn get_payment_method_summary(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+    start_date: String,
+    end_date: String,
+) -> Result<Vec<PaymentMethodSummary>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_payment_method_summary: Using local PostgreSQL");
+        return pool.get_payment_method_summary(&branch_id, &start_date, &end_date).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn generate_invoice_number(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+) -> Result<String, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("generate_invoice_number: Using local PostgreSQL");
+        return pool.generate_invoice_number(&branch_id).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+// ============================================================
+// PRODUCTS REPORT
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProductReportItem {
+    pub invoice_number: String,
+    pub created_at: String,
+    pub patient_name: String,
+    pub product_name: String,
+    pub category: String,
+    pub supplier_name: String,
+    pub quantity: f64,
+    pub unit_price: f64,
+    pub cost_price: f64,
+    pub subtotal: f64,
+    pub profit: f64,
+}
+
+#[tauri::command]
+pub async fn get_products_report(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+    start_date: String,
+    end_date: String,
+) -> Result<Vec<ProductReportItem>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_products_report: Using local PostgreSQL");
+        return pool.get_products_report(&branch_id, &start_date, &end_date).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+// ============================================================
+// SERVICES REPORT
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ServiceReportItem {
+    pub invoice_number: String,
+    pub created_at: String,
+    pub patient_name: String,
+    pub service_name: String,
+    pub service_type: String,
+    pub quantity: f64,
+    pub unit_price: f64,
+    pub subtotal: f64,
+    pub discount_type: Option<String>,
+    pub discount_value: f64,
+    pub discount_reason: Option<String>,
+}
+
+#[tauri::command]
+pub async fn get_services_report(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+    start_date: String,
+    end_date: String,
+) -> Result<Vec<ServiceReportItem>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_services_report: Using local PostgreSQL");
+        return pool.get_services_report(&branch_id, &start_date, &end_date).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+// ============================================================
+// CASH CLOSURE - Daily Summary and Close
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DailySummary {
+    pub total_invoiced: f64,
+    pub total_collected: f64,
+    pub total_pending: f64,
+    pub total_discounts: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DailyInvoice {
+    pub invoice_number: String,
+    pub patient_name: String,
+    pub total_amount: f64,
+    pub status: String,
+    pub payment_method: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CashClosureInput {
+    pub branch_id: String,
+    pub period_start: String,
+    pub period_end: String,
+    pub total_invoiced: f64,
+    pub total_collected: f64,
+    pub total_pending: f64,
+    pub total_discounts: f64,
+    pub consultas_total: f64,
+    pub consultas_count: i64,
+    pub cirugias_total: f64,
+    pub cirugias_count: i64,
+    pub procedimientos_total: f64,
+    pub procedimientos_count: i64,
+    pub estudios_total: f64,
+    pub estudios_count: i64,
+    pub inventory_total: f64,
+    pub inventory_count: i64,
+    pub efectivo_total: f64,
+    pub tarjeta_total: f64,
+    pub transferencia_total: f64,
+    pub cheque_total: f64,
+    pub otro_total: f64,
+    pub detailed_data: Option<serde_json::Value>,
+    pub closed_by: String,
+}
+
+#[tauri::command]
+pub async fn get_daily_summary(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+    start_date: String,
+    end_date: String,
+) -> Result<DailySummary, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_daily_summary: Using local PostgreSQL");
+        return pool.get_daily_summary(&branch_id, &start_date, &end_date).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn get_daily_invoices(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+    start_date: String,
+    end_date: String,
+) -> Result<Vec<DailyInvoice>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_daily_invoices: Using local PostgreSQL");
+        return pool.get_daily_invoices(&branch_id, &start_date, &end_date).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn create_cash_closure(
+    app_state: State<'_, Arc<AppState>>,
+    closure: CashClosureInput,
+) -> Result<serde_json::Value, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("create_cash_closure: Using local PostgreSQL");
+        return pool.create_cash_closure(closure).await;
+    }
+    Err("No database connection available".to_string())
+}
+
 // ============================================================
 // CRM PIPELINES - TYPES
 // ============================================================
@@ -2121,6 +2917,50 @@ pub struct CRMProcedureType {
     pub id: String,
     pub name: String,
     pub color: Option<String>,
+}
+
+// CRM Activity Log types
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CRMUnreadActivity {
+    pub id: String,
+    pub procedure_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CRMActivityPatient {
+    pub first_name: String,
+    pub last_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CRMActivityProcedureType {
+    pub name: String,
+    pub color: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CRMActivityCreator {
+    pub full_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CRMActivityLog {
+    pub id: String,
+    pub pipeline_id: String,
+    pub activity_type: String,
+    pub from_stage: Option<String>,
+    pub to_stage: Option<String>,
+    pub reason: Option<String>,
+    pub created_by: Option<String>,
+    pub branch_id: String,
+    pub created_at: String,
+    pub eye_side: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patient: Option<CRMActivityPatient>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub procedure_type: Option<CRMActivityProcedureType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creator: Option<CRMActivityCreator>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2279,6 +3119,55 @@ pub async fn get_crm_procedure_types(
     Err("No database connection available".to_string())
 }
 
+#[tauri::command]
+pub async fn get_crm_activity_read(
+    app_state: State<'_, Arc<AppState>>,
+    user_id: String,
+) -> Result<Option<String>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_crm_activity_read: Using local PostgreSQL");
+        return pool.get_crm_activity_read(&user_id).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn upsert_crm_activity_read(
+    app_state: State<'_, Arc<AppState>>,
+    user_id: String,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("upsert_crm_activity_read: Using local PostgreSQL");
+        return pool.upsert_crm_activity_read(&user_id).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn get_crm_unread_activities(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+    last_read: Option<String>,
+) -> Result<Vec<CRMUnreadActivity>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_crm_unread_activities: Using local PostgreSQL");
+        return pool.get_crm_unread_activities(&branch_id, last_read.as_deref()).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn get_crm_recent_activities(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+) -> Result<Vec<CRMActivityLog>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_crm_recent_activities: Using local PostgreSQL");
+        return pool.get_crm_recent_activities(&branch_id).await;
+    }
+    Err("No database connection available".to_string())
+}
+
 // ============================================================
 // SCHEDULE BLOCKS (BLOQUES DE HORARIO) - TYPES
 // ============================================================
@@ -2312,21 +3201,52 @@ pub struct ScheduleBlockInput {
 pub struct SurgeryType {
     pub id: String,
     pub name: String,
-    pub description: Option<String>,
+    pub category: Option<String>,
+    pub display_order: i32,
+    pub active: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StudyType {
     pub id: String,
     pub name: String,
-    pub description: Option<String>,
+    pub display_order: i32,
+    pub active: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProcedureTypeConfig {
     pub id: String,
     pub name: String,
-    pub description: Option<String>,
+    pub display_order: i32,
+    pub active: bool,
+}
+
+// Input structs for creating clinical types
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SurgeryTypeInput {
+    pub name: String,
+    pub category: String,
+    pub display_order: Option<i32>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StudyTypeInput {
+    pub name: String,
+    pub display_order: Option<i32>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProcedureTypeInput {
+    pub name: String,
+    pub display_order: Option<i32>,
+}
+
+// Update struct for clinical types (generic for all three)
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClinicalTypeUpdate {
+    pub name: Option<String>,
+    pub active: Option<bool>,
 }
 
 // ============================================================
@@ -2427,6 +3347,117 @@ pub async fn get_procedure_types(
     if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
         log::info!("get_procedure_types: Using local PostgreSQL");
         return pool.get_procedure_types().await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn create_surgery_type(
+    app_state: State<'_, Arc<AppState>>,
+    input: SurgeryTypeInput,
+) -> Result<SurgeryType, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("create_surgery_type: Using local PostgreSQL");
+        return pool.create_surgery_type(&input).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn create_study_type(
+    app_state: State<'_, Arc<AppState>>,
+    input: StudyTypeInput,
+) -> Result<StudyType, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("create_study_type: Using local PostgreSQL");
+        return pool.create_study_type(&input).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn create_procedure_type(
+    app_state: State<'_, Arc<AppState>>,
+    input: ProcedureTypeInput,
+) -> Result<ProcedureTypeConfig, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("create_procedure_type: Using local PostgreSQL");
+        return pool.create_procedure_type(&input).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn update_surgery_type(
+    app_state: State<'_, Arc<AppState>>,
+    id: String,
+    updates: ClinicalTypeUpdate,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("update_surgery_type: Using local PostgreSQL");
+        return pool.update_surgery_type(&id, &updates).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn update_study_type(
+    app_state: State<'_, Arc<AppState>>,
+    id: String,
+    updates: ClinicalTypeUpdate,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("update_study_type: Using local PostgreSQL");
+        return pool.update_study_type(&id, &updates).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn update_procedure_type(
+    app_state: State<'_, Arc<AppState>>,
+    id: String,
+    updates: ClinicalTypeUpdate,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("update_procedure_type: Using local PostgreSQL");
+        return pool.update_procedure_type(&id, &updates).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn delete_surgery_type(
+    app_state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("delete_surgery_type: Using local PostgreSQL");
+        return pool.delete_surgery_type(&id).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn delete_study_type(
+    app_state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("delete_study_type: Using local PostgreSQL");
+        return pool.delete_study_type(&id).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+#[tauri::command]
+pub async fn delete_procedure_type(
+    app_state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("delete_procedure_type: Using local PostgreSQL");
+        return pool.delete_procedure_type(&id).await;
     }
     Err("No database connection available".to_string())
 }
@@ -2681,4 +3712,756 @@ fn collect_files_recursive(
         }
     }
     Ok(())
+}
+
+// ============================================================
+// APP SETTINGS - TYPES
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AppSetting {
+    pub id: String,
+    pub key: String,
+    pub value: serde_json::Value,
+    pub description: Option<String>,
+}
+
+// ============================================================
+// APP SETTINGS - COMMANDS
+// ============================================================
+
+/// Get all app settings
+#[tauri::command]
+pub async fn get_app_settings(
+    app_state: State<'_, Arc<AppState>>,
+) -> Result<Vec<AppSetting>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_app_settings: Using local PostgreSQL");
+        return pool.get_app_settings().await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Update an app setting by key
+#[tauri::command]
+pub async fn update_app_setting(
+    app_state: State<'_, Arc<AppState>>,
+    key: String,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("update_app_setting: Using local PostgreSQL for key: {}", key);
+        return pool.update_app_setting(&key, &value).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+// ============================================================
+// CONSENT SIGNATURES - TYPES
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ConsentSignature {
+    pub id: String,
+    pub surgery_id: Option<String>,
+    pub procedure_id: Option<String>,
+    pub patient_id: String,
+    pub patient_signature: String,
+    pub patient_name: String,
+    pub witness_signature: String,
+    pub witness_name: String,
+    pub consent_text: String,
+    pub pdf_url: Option<String>,
+    pub signed_at: String,
+    pub signed_by: Option<String>,
+    pub branch_id: Option<String>,
+}
+
+// ============================================================
+// CONSENT SIGNATURES - COMMANDS
+// ============================================================
+
+/// Get consent signature by surgery ID
+#[tauri::command]
+pub async fn get_consent_signature_by_surgery(
+    app_state: State<'_, Arc<AppState>>,
+    surgery_id: String,
+) -> Result<Option<ConsentSignature>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_consent_signature_by_surgery: Using local PostgreSQL for surgery: {}", surgery_id);
+        return pool.get_consent_signature_by_surgery(&surgery_id).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+// ============================================================
+// ROOM INVENTORY - TYPES
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RoomInventoryCategory {
+    pub id: String,
+    pub name: String,
+    pub parent_id: Option<String>,
+    pub display_order: i32,
+    pub active: bool,
+    pub branch_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RoomInventoryCategoryInput {
+    pub name: String,
+    pub parent_id: Option<String>,
+    pub display_order: Option<i32>,
+    pub branch_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RoomInventoryCategoryUpdate {
+    pub name: Option<String>,
+    pub parent_id: Option<String>,
+    pub display_order: Option<i32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RoomInventoryItem {
+    pub id: String,
+    pub category_id: String,
+    pub name: String,
+    pub code: Option<String>,
+    pub brand: Option<String>,
+    pub specification: Option<String>,
+    pub current_stock: i32,
+    pub min_stock: i32,
+    pub unit: String,
+    pub notes: Option<String>,
+    pub active: bool,
+    pub branch_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<RoomInventoryCategory>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RoomInventoryItemInput {
+    pub category_id: String,
+    pub name: String,
+    pub code: Option<String>,
+    pub brand: Option<String>,
+    pub specification: Option<String>,
+    pub current_stock: Option<i32>,
+    pub min_stock: Option<i32>,
+    pub unit: Option<String>,
+    pub notes: Option<String>,
+    pub branch_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RoomInventoryItemUpdate {
+    pub category_id: Option<String>,
+    pub name: Option<String>,
+    pub code: Option<String>,
+    pub brand: Option<String>,
+    pub specification: Option<String>,
+    pub min_stock: Option<i32>,
+    pub unit: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RoomInventoryMovement {
+    pub id: String,
+    pub item_id: String,
+    pub quantity: i32,
+    pub movement_type: String,
+    pub notes: Option<String>,
+    pub user_id: Option<String>,
+    pub branch_id: String,
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item: Option<RoomInventoryItem>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RoomInventoryMovementInput {
+    pub item_id: String,
+    pub quantity: i32,
+    pub movement_type: String,
+    pub notes: Option<String>,
+    pub user_id: Option<String>,
+    pub branch_id: String,
+}
+
+// ============================================================
+// ROOM INVENTORY - COMMANDS
+// ============================================================
+
+/// Get room inventory categories by branch
+#[tauri::command]
+pub async fn get_room_inventory_categories(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+) -> Result<Vec<RoomInventoryCategory>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_room_inventory_categories: Using local PostgreSQL");
+        return pool.get_room_inventory_categories(&branch_id).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Create a room inventory category
+#[tauri::command]
+pub async fn create_room_inventory_category(
+    app_state: State<'_, Arc<AppState>>,
+    input: RoomInventoryCategoryInput,
+) -> Result<RoomInventoryCategory, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("create_room_inventory_category: Using local PostgreSQL");
+        return pool.create_room_inventory_category(&input).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Update a room inventory category
+#[tauri::command]
+pub async fn update_room_inventory_category(
+    app_state: State<'_, Arc<AppState>>,
+    id: String,
+    updates: RoomInventoryCategoryUpdate,
+) -> Result<RoomInventoryCategory, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("update_room_inventory_category: Using local PostgreSQL");
+        return pool.update_room_inventory_category(&id, &updates).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Soft delete a room inventory category
+#[tauri::command]
+pub async fn delete_room_inventory_category(
+    app_state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("delete_room_inventory_category: Using local PostgreSQL");
+        return pool.delete_room_inventory_category(&id).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Get room inventory items by branch and optional category
+#[tauri::command]
+pub async fn get_room_inventory_items(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+    category_id: Option<String>,
+) -> Result<Vec<RoomInventoryItem>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_room_inventory_items: Using local PostgreSQL");
+        return pool.get_room_inventory_items(&branch_id, category_id.as_deref()).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Create a room inventory item
+#[tauri::command]
+pub async fn create_room_inventory_item(
+    app_state: State<'_, Arc<AppState>>,
+    input: RoomInventoryItemInput,
+) -> Result<RoomInventoryItem, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("create_room_inventory_item: Using local PostgreSQL");
+        return pool.create_room_inventory_item(&input).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Update a room inventory item
+#[tauri::command]
+pub async fn update_room_inventory_item(
+    app_state: State<'_, Arc<AppState>>,
+    id: String,
+    updates: RoomInventoryItemUpdate,
+) -> Result<RoomInventoryItem, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("update_room_inventory_item: Using local PostgreSQL");
+        return pool.update_room_inventory_item(&id, &updates).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Soft delete a room inventory item
+#[tauri::command]
+pub async fn delete_room_inventory_item(
+    app_state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("delete_room_inventory_item: Using local PostgreSQL");
+        return pool.delete_room_inventory_item(&id).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Update room inventory item stock
+#[tauri::command]
+pub async fn update_room_inventory_stock(
+    app_state: State<'_, Arc<AppState>>,
+    id: String,
+    new_stock: i32,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("update_room_inventory_stock: Using local PostgreSQL");
+        return pool.update_room_inventory_stock(&id, new_stock).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Create a room inventory movement
+#[tauri::command]
+pub async fn create_room_inventory_movement(
+    app_state: State<'_, Arc<AppState>>,
+    input: RoomInventoryMovementInput,
+) -> Result<RoomInventoryMovement, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("create_room_inventory_movement: Using local PostgreSQL");
+        return pool.create_room_inventory_movement(&input).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Get room inventory movements
+#[tauri::command]
+pub async fn get_room_inventory_movements(
+    app_state: State<'_, Arc<AppState>>,
+    branch_id: String,
+    item_id: Option<String>,
+    limit: Option<i32>,
+) -> Result<Vec<RoomInventoryMovement>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_room_inventory_movements: Using local PostgreSQL");
+        return pool.get_room_inventory_movements(&branch_id, item_id.as_deref(), limit.unwrap_or(50)).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+// ============================================================
+// ANALYTICS V2 - For Analytics.tsx offline support
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AnalyticsServiceSales {
+    pub service_type: String,
+    pub cantidad: i64,
+    pub total: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AnalyticsPaymentMethod {
+    pub metodo: String,
+    pub cantidad: i64,
+    pub total: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AnalyticsItemDetail {
+    pub item_id: String,
+    pub item_name: String,
+    pub total_quantity: i64,
+    pub total_revenue: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ClinicalStatsWithRevenue {
+    pub tipo_cita: String,
+    pub doctor_id: Option<String>,
+    pub doctor_name: String,
+    pub cantidad: i64,
+    pub pacientes_unicos: i64,
+    pub revenue_real: f64,
+    pub revenue_estimado: f64,
+    pub revenue_total: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AnalyticsInvoice {
+    pub id: String,
+    pub total_amount: f64,
+    pub created_at: String,
+    pub status: String,
+    pub discount_value: f64,
+    pub discount_type: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AnalyticsClosure {
+    pub id: String,
+    pub closure_date: String,
+    pub total_invoiced: f64,
+    pub total_collected: f64,
+    pub total_pending: f64,
+    pub closed_by: Option<String>,
+    pub user_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AnalyticsAppointment {
+    pub id: String,
+    pub starts_at: String,
+    pub appointment_type: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AnalyticsDoctor {
+    pub user_id: String,
+    pub full_name: String,
+}
+
+// Doctor Activity Detail (for DoctorDetailDialog)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DoctorActivityDetail {
+    pub appointment_id: String,
+    pub patient_code: Option<String>,
+    pub patient_name: String,
+    pub appointment_type: String,
+    pub appointment_date: String,
+    pub is_invoiced: bool,
+    pub is_courtesy: bool,
+    pub invoice_amount: f64,
+    pub surgery_type: Option<String>,
+    pub procedure_type: Option<String>,
+}
+
+// Referred Study (for DoctorDetailDialog)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReferredStudy {
+    pub id: String,
+    pub title: Option<String>,
+    pub eye_side: Option<String>,
+    pub created_at: String,
+    pub patient_code: Option<String>,
+    pub patient_first_name: String,
+    pub patient_last_name: String,
+    pub files_count: i32,
+}
+
+// ============================================================
+// RESEARCH - Clinical research data types
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ResearchFilters {
+    pub start_date: String,
+    pub end_date: String,
+    pub doctor_filter: Option<String>,
+    pub diagnosis_filter: Option<String>,
+    pub search_field_type: Option<String>,
+    pub surgery_type_filter: Option<String>,
+    pub appointment_type_filter: Option<String>,
+    pub has_preop_data: Option<bool>,
+    pub has_postop_data: Option<bool>,
+    pub min_age: Option<i32>,
+    pub max_age: Option<i32>,
+    pub gender_filter: Option<String>,
+    pub has_diabetes: Option<bool>,
+    pub has_hta: Option<bool>,
+    pub has_autorefractor: Option<bool>,
+    pub has_lensometry: Option<bool>,
+    pub has_keratometry: Option<bool>,
+    pub has_pio: Option<bool>,
+    pub has_fundus_photos: Option<bool>,
+    pub has_slit_lamp: Option<bool>,
+    pub has_visual_acuity: Option<bool>,
+    pub has_subjective_refraction: Option<bool>,
+    pub has_prescription: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ClinicalResearchRow {
+    // Patient info
+    pub patient_id: Option<String>,
+    pub patient_code: Option<String>,
+    pub patient_name: Option<String>,
+    pub patient_age: Option<i32>,
+    pub patient_gender: Option<String>,
+    pub has_diabetes: Option<bool>,
+    pub has_hta: Option<bool>,
+    // Encounter info
+    pub encounter_id: Option<String>,
+    pub encounter_date: Option<String>,
+    pub appointment_type: Option<String>,
+    pub doctor_name: Option<String>,
+    pub chief_complaint: Option<String>,
+    // Diagnosis
+    pub diagnosis_summary: Option<String>,
+    pub treatment_plan: Option<String>,
+    pub recommended_surgeries: Option<String>,
+    pub recommended_studies: Option<String>,
+    // OD exam
+    pub od_avsc: Option<String>,
+    pub od_avcc: Option<String>,
+    pub od_pio: Option<f64>,
+    pub od_autorefractor: Option<String>,
+    pub od_lensometry: Option<String>,
+    pub od_keratometry: Option<String>,
+    pub od_subjective_refraction: Option<String>,
+    pub od_final_prescription: Option<String>,
+    pub od_slit_lamp: Option<String>,
+    pub od_fundus: Option<String>,
+    // OI exam
+    pub oi_avsc: Option<String>,
+    pub oi_avcc: Option<String>,
+    pub oi_pio: Option<f64>,
+    pub oi_autorefractor: Option<String>,
+    pub oi_lensometry: Option<String>,
+    pub oi_keratometry: Option<String>,
+    pub oi_subjective_refraction: Option<String>,
+    pub oi_final_prescription: Option<String>,
+    pub oi_slit_lamp: Option<String>,
+    pub oi_fundus: Option<String>,
+    // Surgery info
+    pub surgery_type: Option<String>,
+    pub surgery_eye: Option<String>,
+    pub surgery_date: Option<String>,
+    // Procedure info
+    pub procedure_type: Option<String>,
+    pub procedure_eye: Option<String>,
+    // Study info
+    pub study_type: Option<String>,
+    pub study_status: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PatientVisit {
+    pub encounter_id: String,
+    pub encounter_date: String,
+    pub appointment_type: Option<String>,
+    pub doctor_name: Option<String>,
+    pub diagnosis_summary: Option<String>,
+    pub treatment_plan: Option<String>,
+    // OD
+    pub od_avsc: Option<String>,
+    pub od_avcc: Option<String>,
+    pub od_pio: Option<f64>,
+    // OI
+    pub oi_avsc: Option<String>,
+    pub oi_avcc: Option<String>,
+    pub oi_pio: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ClinicalResearchPatient {
+    pub patient_id: String,
+    pub patient_code: Option<String>,
+    pub patient_name: String,
+    pub patient_age: Option<i32>,
+    pub patient_gender: Option<String>,
+    pub has_diabetes: Option<bool>,
+    pub has_hta: Option<bool>,
+    pub total_visits: i32,
+    pub first_visit: Option<String>,
+    pub last_visit: Option<String>,
+    pub visits: Vec<PatientVisit>,
+}
+
+/// Get service sales for analytics (optional branch filter)
+#[tauri::command]
+pub async fn get_analytics_service_sales(
+    app_state: State<'_, Arc<AppState>>,
+    start_date: String,
+    end_date: String,
+    branch_filter: Option<String>,
+) -> Result<Vec<AnalyticsServiceSales>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_analytics_service_sales: Using local PostgreSQL");
+        return pool.get_analytics_service_sales(&start_date, &end_date, branch_filter.as_deref()).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Get payment methods for analytics (optional branch filter)
+#[tauri::command]
+pub async fn get_analytics_payment_methods(
+    app_state: State<'_, Arc<AppState>>,
+    start_date: String,
+    end_date: String,
+    branch_filter: Option<String>,
+) -> Result<Vec<AnalyticsPaymentMethod>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_analytics_payment_methods: Using local PostgreSQL");
+        return pool.get_analytics_payment_methods(&start_date, &end_date, branch_filter.as_deref()).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Get top inventory products for analytics (optional branch filter)
+#[tauri::command]
+pub async fn get_analytics_inventory_details(
+    app_state: State<'_, Arc<AppState>>,
+    start_date: String,
+    end_date: String,
+    branch_filter: Option<String>,
+) -> Result<Vec<AnalyticsItemDetail>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_analytics_inventory_details: Using local PostgreSQL");
+        return pool.get_analytics_inventory_details(&start_date, &end_date, branch_filter.as_deref()).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Get top service items for analytics (optional branch filter)
+#[tauri::command]
+pub async fn get_analytics_service_details(
+    app_state: State<'_, Arc<AppState>>,
+    start_date: String,
+    end_date: String,
+    branch_filter: Option<String>,
+) -> Result<Vec<AnalyticsItemDetail>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_analytics_service_details: Using local PostgreSQL");
+        return pool.get_analytics_service_details(&start_date, &end_date, branch_filter.as_deref()).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Get clinical stats with revenue for analytics
+#[tauri::command]
+pub async fn get_clinical_stats_with_revenue(
+    app_state: State<'_, Arc<AppState>>,
+    start_date: String,
+    end_date: String,
+    doctor_filter: Option<String>,
+    branch_filter: Option<String>,
+) -> Result<Vec<ClinicalStatsWithRevenue>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_clinical_stats_with_revenue: Using local PostgreSQL");
+        return pool.get_clinical_stats_with_revenue(&start_date, &end_date, doctor_filter.as_deref(), branch_filter.as_deref()).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Get invoices for analytics metrics
+#[tauri::command]
+pub async fn get_analytics_invoices(
+    app_state: State<'_, Arc<AppState>>,
+    start_date: String,
+    end_date: String,
+    branch_filter: Option<String>,
+) -> Result<Vec<AnalyticsInvoice>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_analytics_invoices: Using local PostgreSQL");
+        return pool.get_analytics_invoices(&start_date, &end_date, branch_filter.as_deref()).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Get cash closures for analytics
+#[tauri::command]
+pub async fn get_analytics_closures(
+    app_state: State<'_, Arc<AppState>>,
+    start_date: String,
+    end_date: String,
+    branch_filter: Option<String>,
+) -> Result<Vec<AnalyticsClosure>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_analytics_closures: Using local PostgreSQL");
+        return pool.get_analytics_closures(&start_date, &end_date, branch_filter.as_deref()).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Get appointments for analytics daily trend
+#[tauri::command]
+pub async fn get_analytics_appointments(
+    app_state: State<'_, Arc<AppState>>,
+    start_date: String,
+    end_date: String,
+    doctor_filter: Option<String>,
+    branch_filter: Option<String>,
+) -> Result<Vec<AnalyticsAppointment>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_analytics_appointments: Using local PostgreSQL");
+        return pool.get_analytics_appointments(&start_date, &end_date, doctor_filter.as_deref(), branch_filter.as_deref()).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Get doctors list for analytics
+#[tauri::command]
+pub async fn get_analytics_doctors(
+    app_state: State<'_, Arc<AppState>>,
+) -> Result<Vec<AnalyticsDoctor>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_analytics_doctors: Using local PostgreSQL");
+        return pool.get_analytics_doctors().await;
+    }
+    Err("No database connection available".to_string())
+}
+
+// ============================================================
+// RESEARCH COMMANDS
+// ============================================================
+
+/// Get clinical research data (by encounter/consultation)
+#[tauri::command]
+pub async fn get_clinical_research_data(
+    app_state: State<'_, Arc<AppState>>,
+    filters: ResearchFilters,
+) -> Result<Vec<ClinicalResearchRow>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_clinical_research_data: Using local PostgreSQL");
+        return pool.get_clinical_research_data(&filters).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Get clinical research data grouped by patient
+#[tauri::command]
+pub async fn get_clinical_research_data_by_patient(
+    app_state: State<'_, Arc<AppState>>,
+    filters: ResearchFilters,
+) -> Result<Vec<ClinicalResearchPatient>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_clinical_research_data_by_patient: Using local PostgreSQL");
+        return pool.get_clinical_research_data_by_patient(&filters).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+// ============================================================
+// DOCTOR DETAIL DIALOG COMMANDS
+// ============================================================
+
+/// Get doctor activity detail (for DoctorDetailDialog)
+#[tauri::command]
+pub async fn get_doctor_activity_detail(
+    app_state: State<'_, Arc<AppState>>,
+    start_date: String,
+    end_date: String,
+    doctor_filter: String,
+    branch_filter: Option<String>,
+) -> Result<Vec<DoctorActivityDetail>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_doctor_activity_detail: Using local PostgreSQL");
+        return pool.get_doctor_activity_detail(&start_date, &end_date, &doctor_filter, branch_filter.as_deref()).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Get referred studies by doctor (for DoctorDetailDialog)
+#[tauri::command]
+pub async fn get_referred_studies_by_doctor(
+    app_state: State<'_, Arc<AppState>>,
+    doctor_id: String,
+    start_date: String,
+    end_date: String,
+) -> Result<Vec<ReferredStudy>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_referred_studies_by_doctor: Using local PostgreSQL");
+        return pool.get_referred_studies_by_doctor(&doctor_id, &start_date, &end_date).await;
+    }
+    Err("No database connection available".to_string())
 }

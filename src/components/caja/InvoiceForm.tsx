@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
 import { useBranch } from '@/hooks/useBranch';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,6 +16,11 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 
 interface InvoiceFormProps {
   initialAppointmentId?: string;
@@ -32,6 +39,8 @@ interface InvoiceItem {
 export default function InvoiceForm({ initialAppointmentId, initialPatientId }: InvoiceFormProps) {
   const queryClient = useQueryClient();
   const { currentBranch } = useBranch();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const [searchPatient, setSearchPatient] = useState('');
   const [selectedPatient, setSelectedPatient] = useState<any>(null);
   const [selectedAppointment, setSelectedAppointment] = useState<string>(initialAppointmentId || '');
@@ -62,24 +71,46 @@ export default function InvoiceForm({ initialAppointmentId, initialPatientId }: 
 
   const loadInitialPatient = async () => {
     if (!initialPatientId) return;
+
+    if (isLocalMode) {
+      const patient = await invoke<any>('get_patient_by_id', { id: initialPatientId });
+      if (patient) setSelectedPatient(patient);
+      return;
+    }
+
     const { data: patient } = await supabase
       .from('patients')
       .select('*')
       .eq('id', initialPatientId)
       .single();
-    
+
     if (patient) {
       setSelectedPatient(patient);
     }
   };
 
   const selectExternalClient = async () => {
+    if (isLocalMode) {
+      // En modo local, buscar cliente externo
+      const patients = await invoke<any[]>('get_patients', { branchId: currentBranch?.id || '', search: 'EXTERNO-001' });
+      const externalPatient = patients.find(p => p.code === 'EXTERNO-001');
+      if (externalPatient) {
+        setSelectedPatient(externalPatient);
+        setIsExternalClient(true);
+        setSelectedAppointment('');
+        toast.success('Cliente externo seleccionado');
+      } else {
+        toast.error('Error al cargar cliente externo');
+      }
+      return;
+    }
+
     const { data: externalPatient } = await supabase
       .from('patients')
       .select('*')
       .eq('code', 'EXTERNO-001')
       .single();
-    
+
     if (externalPatient) {
       setSelectedPatient(externalPatient);
       setIsExternalClient(true);
@@ -92,9 +123,15 @@ export default function InvoiceForm({ initialAppointmentId, initialPatientId }: 
 
   // Buscar pacientes
   const { data: patients } = useQuery({
-    queryKey: ['patients-search', searchPatient],
+    queryKey: ['patients-search', searchPatient, isLocalMode],
     queryFn: async () => {
       if (!searchPatient || searchPatient.length < 2) return [];
+
+      if (isLocalMode) {
+        const allPatients = await invoke<any[]>('get_patients', { branchId: currentBranch?.id || '', search: searchPatient });
+        return allPatients.slice(0, 10);
+      }
+
       const { data } = await supabase
         .from('patients')
         .select('id, first_name, last_name, code')
@@ -107,9 +144,30 @@ export default function InvoiceForm({ initialAppointmentId, initialPatientId }: 
 
   // Obtener citas del paciente
   const { data: appointments } = useQuery({
-    queryKey: ['patient-appointments', selectedPatient?.id],
+    queryKey: ['patient-appointments', selectedPatient?.id, isLocalMode],
     queryFn: async () => {
       if (!selectedPatient) return [];
+
+      if (isLocalMode) {
+        // En modo local, obtener citas por paciente
+        const today = new Date().toISOString().split('T')[0];
+        const allAppointments = await invoke<any[]>('get_appointments', {
+          branchId: currentBranch?.id || '',
+          date: today
+        });
+        // Filtrar por paciente y ordenar
+        return allAppointments
+          .filter(apt => apt.patient_id === selectedPatient.id || apt.patient?.id === selectedPatient.id)
+          .sort((a, b) => new Date(b.starts_at).getTime() - new Date(a.starts_at).getTime())
+          .slice(0, 20)
+          .map(apt => ({
+            id: apt.id,
+            type: apt.appointment_type || apt.type,
+            starts_at: apt.starts_at,
+            status: apt.status
+          }));
+      }
+
       const { data } = await supabase
         .from('appointments')
         .select('id, type, starts_at, status')
@@ -123,8 +181,11 @@ export default function InvoiceForm({ initialAppointmentId, initialPatientId }: 
 
   // Obtener precios de servicios
   const { data: servicePrices } = useQuery({
-    queryKey: ['service-prices'],
+    queryKey: ['service-prices', isLocalMode],
     queryFn: async () => {
+      if (isLocalMode) {
+        return await invoke<any[]>('get_service_prices');
+      }
       const { data } = await supabase
         .from('service_prices')
         .select('*')
@@ -135,9 +196,15 @@ export default function InvoiceForm({ initialAppointmentId, initialPatientId }: 
 
   // Obtener productos de inventario (filtrado por sucursal actual)
   const { data: inventoryItems } = useQuery({
-    queryKey: ['inventory-items', currentBranch?.id],
+    queryKey: ['inventory-items', currentBranch?.id, isLocalMode],
     queryFn: async () => {
       if (!currentBranch?.id) return [];
+
+      if (isLocalMode) {
+        const items = await invoke<any[]>('get_inventory_items', { branchId: currentBranch.id });
+        return items.filter(item => item.active !== false);
+      }
+
       const { data } = await supabase
         .from('inventory_items')
         .select('*')
@@ -172,6 +239,42 @@ export default function InvoiceForm({ initialAppointmentId, initialPatientId }: 
       if (items.length === 0) throw new Error('Agregue al menos un item');
       if (discountEnabled && !discountReason.trim()) throw new Error('Debe ingresar la razón del descuento');
       if (!currentBranch?.id) throw new Error('No hay sucursal seleccionada');
+
+      if (isLocalMode) {
+        // En modo local, generar número de factura manualmente
+        const prefix = currentBranch?.code || 'CV';
+        const timestamp = Date.now().toString().slice(-6);
+        const invoiceNumber = `${prefix}-${timestamp}`;
+
+        // Crear factura usando Tauri
+        const invoice = await invoke<any>('create_invoice', {
+          invoice: {
+            branch_id: currentBranch.id,
+            invoice_number: invoiceNumber,
+            patient_id: selectedPatient.id,
+            appointment_id: selectedAppointment || null,
+            total_amount: total,
+            balance_due: total,
+            status: 'pendiente',
+            notes: notes || null,
+            discount_type: discountEnabled ? discountType : null,
+            discount_value: discountEnabled ? Number(discountValue) : 0,
+            discount_reason: discountEnabled ? discountReason : null,
+          }
+        });
+
+        // Crear items
+        for (const item of items) {
+          await invoke('create_invoice_item', {
+            item: {
+              invoice_id: invoice.id,
+              ...item,
+            }
+          });
+        }
+
+        return invoice;
+      }
 
       // Generar número de factura con prefijo por sucursal (CV-0001 para Central, SL-0001 para Santa Lucía)
       const { data: invoiceNumber } = await supabase.rpc('generate_invoice_number_for_branch', {

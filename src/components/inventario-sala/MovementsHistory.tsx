@@ -6,6 +6,13 @@ import { ArrowDownCircle, ArrowUpCircle, RefreshCw } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 
 interface MovementsHistoryProps {
   itemId?: string;
@@ -27,22 +34,38 @@ interface Movement {
 }
 
 export function MovementsHistory({ itemId, branchId }: MovementsHistoryProps) {
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+
   const { data: movements = [], isLoading } = useQuery({
-    queryKey: ['room-inventory-movements', branchId, itemId],
+    queryKey: ['room-inventory-movements', branchId, itemId, isLocalMode],
     queryFn: async () => {
       if (!branchId) return [];
-      
+
+      if (isLocalMode) {
+        const data = await invoke<any[]>('get_room_inventory_movements', {
+          branchId,
+          itemId: itemId || null,
+          limit: 50,
+        });
+        // Map the response to match the expected format
+        return data.map((m) => ({
+          ...m,
+          item: m.item ? { name: m.item.name, unit: m.item.unit } : undefined,
+        })) as Movement[];
+      }
+
       let query = supabase
         .from('room_inventory_movements')
         .select('*, item:room_inventory_items(name, unit)')
         .eq('branch_id', branchId)
         .order('created_at', { ascending: false })
         .limit(50);
-      
+
       if (itemId) {
         query = query.eq('item_id', itemId);
       }
-      
+
       const { data, error } = await query;
       if (error) throw error;
       return data as Movement[];

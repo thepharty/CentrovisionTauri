@@ -12,13 +12,37 @@ import { useState, useEffect } from 'react';
 import { Appointment } from '@/types/database';
 import { useAuth } from '@/hooks/useAuth';
 import { useBranch } from '@/hooks/useBranch';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useQuery } from '@tanstack/react-query';
+import { invoke } from '@tauri-apps/api/core';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+interface UserRole {
+  id: string;
+  user_id: string;
+  role: string;
+}
+
+interface Encounter {
+  id: string;
+  patient_id: string;
+  type: string;
+  doctor_id?: string;
+  appointment_id?: string;
+  date: string;
+}
 
 export default function Dashboard() {
   const { user, role, roles } = useAuth();
   const { currentBranch } = useBranch();
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
@@ -63,16 +87,22 @@ export default function Dashboard() {
 
   // Query optimizada con staleTime más largo (doctores cambian raramente)
   const { data: activeDoctors = [], isLoading: isLoadingDoctors } = useQuery({
-    queryKey: ['active-doctors'],
+    queryKey: ['active-doctors', isLocalMode],
     staleTime: 5 * 60 * 1000, // 5 minutos - Los médicos activos no cambian frecuentemente
     queryFn: async () => {
-      const { data: roles } = await supabase
+      if (isLocalMode) {
+        const userRoles = await invoke<UserRole[]>('get_user_roles');
+        return userRoles
+          .filter(r => r.role === 'doctor')
+          .map(r => r.user_id);
+      }
+      const { data: rolesData } = await supabase
         .from('user_roles')
         .select('user_id')
         .eq('role', 'doctor');
 
-      if (!roles || roles.length === 0) return [] as string[];
-      return roles.map((r) => r.user_id);
+      if (!rolesData || rolesData.length === 0) return [] as string[];
+      return rolesData.map((r) => r.user_id);
     },
   });
 
@@ -173,13 +203,29 @@ export default function Dashboard() {
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    const { data: encounters } = await supabase
-      .from('encounters')
-      .select('id')
-      .eq('patient_id', appointment.patient_id)
-      .gte('date', today.toISOString())
-      .lt('date', tomorrow.toISOString())
-      .limit(1);
+    let encounters: { id: string }[] | null = null;
+
+    if (isLocalMode) {
+      const allEncounters = await invoke<Encounter[]>('get_encounters_by_patient', {
+        patientId: appointment.patient_id
+      });
+      encounters = allEncounters
+        .filter(e => {
+          const encDate = new Date(e.date);
+          return encDate >= today && encDate < tomorrow;
+        })
+        .slice(0, 1)
+        .map(e => ({ id: e.id }));
+    } else {
+      const { data } = await supabase
+        .from('encounters')
+        .select('id')
+        .eq('patient_id', appointment.patient_id)
+        .gte('date', today.toISOString())
+        .lt('date', tomorrow.toISOString())
+        .limit(1);
+      encounters = data;
+    }
 
     // Determine which route to use based on appointment type
     const isReconsulta = ['reconsulta_menos_3m', 'reconsulta_mas_3m', 'post_operado', 'lectura_resultados'].includes(appointment.type);
@@ -197,19 +243,33 @@ export default function Dashboard() {
       navigate(`/${route}/${encounters[0].id}`);
     } else {
       // Create new encounter
-      const { data: newEncounter, error } = await supabase
-        .from('encounters')
-        .insert([{
-          patient_id: appointment.patient_id,
-          type: encounterType,
-          doctor_id: appointment.doctor_id,
-          appointment_id: appointment.id,
-        }])
-        .select()
-        .single();
+      if (isLocalMode) {
+        const newEncounter = await invoke<Encounter>('create_encounter', {
+          encounter: {
+            patient_id: appointment.patient_id,
+            type: encounterType,
+            doctor_id: appointment.doctor_id,
+            appointment_id: appointment.id,
+          }
+        });
+        if (newEncounter) {
+          navigate(`/${route}/${newEncounter.id}`);
+        }
+      } else {
+        const { data: newEncounter, error } = await supabase
+          .from('encounters')
+          .insert([{
+            patient_id: appointment.patient_id,
+            type: encounterType,
+            doctor_id: appointment.doctor_id,
+            appointment_id: appointment.id,
+          }])
+          .select()
+          .single();
 
-      if (!error && newEncounter) {
-        navigate(`/${route}/${newEncounter.id}`);
+        if (!error && newEncounter) {
+          navigate(`/${route}/${newEncounter.id}`);
+        }
       }
     }
   };

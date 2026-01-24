@@ -3,6 +3,13 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Helper to check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
 
 interface InvoiceDetailDialogProps {
   invoiceId: string | null;
@@ -11,11 +18,20 @@ interface InvoiceDetailDialogProps {
 }
 
 export default function InvoiceDetailDialog({ invoiceId, open, onOpenChange }: InvoiceDetailDialogProps) {
+  const { connectionMode } = useNetworkStatus();
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+
   const { data: invoice } = useQuery({
-    queryKey: ['invoice-detail', invoiceId],
+    queryKey: ['invoice-detail', invoiceId, isLocalMode],
     queryFn: async () => {
       if (!invoiceId) return null;
-      
+
+      if (isLocalMode) {
+        // En modo local, usar el comando Tauri
+        const data = await invoke<any>('get_invoice_by_id', { id: invoiceId });
+        return data;
+      }
+
       const { data, error } = await supabase
         .from('invoices')
         .select(`
@@ -30,7 +46,7 @@ export default function InvoiceDetailDialog({ invoiceId, open, onOpenChange }: I
         `)
         .eq('id', invoiceId)
         .single();
-      
+
       if (error) throw error;
       return data;
     },
@@ -38,15 +54,21 @@ export default function InvoiceDetailDialog({ invoiceId, open, onOpenChange }: I
   });
 
   const { data: items } = useQuery({
-    queryKey: ['invoice-items', invoiceId],
+    queryKey: ['invoice-items', invoiceId, isLocalMode],
     queryFn: async () => {
       if (!invoiceId) return [];
-      
+
+      if (isLocalMode) {
+        // En modo local, usar el comando Tauri
+        const data = await invoke<any[]>('get_invoice_items', { invoiceId });
+        return data || [];
+      }
+
       const { data, error } = await supabase
         .from('invoice_items')
         .select('*')
         .eq('invoice_id', invoiceId);
-      
+
       if (error) throw error;
       return data;
     },
@@ -54,16 +76,25 @@ export default function InvoiceDetailDialog({ invoiceId, open, onOpenChange }: I
   });
 
   const { data: payments } = useQuery({
-    queryKey: ['invoice-payments', invoiceId],
+    queryKey: ['invoice-payments', invoiceId, isLocalMode],
     queryFn: async () => {
       if (!invoiceId) return [];
-      
+
+      if (isLocalMode) {
+        // En modo local, usar el comando Tauri
+        const data = await invoke<any[]>('get_payments_by_invoice', { invoiceId });
+        // Ordenar por fecha descendente en cliente
+        return (data || []).sort((a, b) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+      }
+
       const { data, error } = await supabase
         .from('payments')
         .select('*')
         .eq('invoice_id', invoiceId)
         .order('created_at', { ascending: false });
-      
+
       if (error) throw error;
       return data;
     },

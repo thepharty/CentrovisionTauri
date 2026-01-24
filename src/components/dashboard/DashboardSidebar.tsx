@@ -20,6 +20,27 @@ import { BranchSelector } from '@/components/BranchSelector';
 import { useTheme } from 'next-themes';
 import { useCRMNotifications } from '@/hooks/useCRMNotifications';
 import { useAppSettings } from '@/hooks/useAppSettings';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { invoke } from '@tauri-apps/api/core';
+
+// Check if running in Tauri
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window;
+}
+
+// Types for Tauri commands
+interface DoctorLocal {
+  user_id: string;
+  full_name: string;
+}
+
+interface RoomLocal {
+  id: string;
+  name: string;
+  kind: string;
+  branch_id: string;
+  active: boolean;
+}
 interface DashboardSidebarProps {
   currentDate: Date;
   onDateChange: (date: Date) => void;
@@ -49,6 +70,7 @@ export function DashboardSidebar({
     user
   } = useAuth();
   const { currentBranch } = useBranch();
+  const { connectionMode } = useNetworkStatus();
   const navigate = useNavigate();
   const { theme, setTheme } = useTheme();
   const [calendarOpen, setCalendarOpen] = useState(true);
@@ -56,10 +78,12 @@ export function DashboardSidebar({
   const [diagnosticoOpen, setDiagnosticoOpen] = useState(true);
   const [quirofanoOpen, setQuirofanoOpen] = useState(true);
   const [clickTimeout, setClickTimeout] = useState<ReturnType<typeof setTimeout> | null>(null);
-  
+
+  const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+
   // CRM notifications
   const { unreadCount } = useCRMNotifications();
-  
+
   // App settings for CRM visibility
   const { isCRMVisibleForAll } = useAppSettings();
 
@@ -92,8 +116,16 @@ export function DashboardSidebar({
   const {
     data: doctors = []
   } = useQuery({
-    queryKey: ['sidebar-doctors'],
+    queryKey: ['sidebar-doctors', connectionMode],
     queryFn: async () => {
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[DashboardSidebar] Getting doctors from PostgreSQL local');
+        const data = await invoke<DoctorLocal[]>('get_doctors', {});
+        return data;
+      }
+
+      // Modo Supabase
       const {
         data: roles
       } = await supabase.from('user_roles').select('user_id').eq('role', 'doctor');
@@ -113,9 +145,20 @@ export function DashboardSidebar({
   const {
     data: diagnosticoRoom
   } = useQuery({
-    queryKey: ['diagnostico-room', currentBranch?.id],
+    queryKey: ['diagnostico-room', currentBranch?.id, connectionMode],
     queryFn: async () => {
       if (!currentBranch?.id) return null;
+
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[DashboardSidebar] Getting diagnostico room from PostgreSQL local');
+        const rooms = await invoke<RoomLocal[]>('get_rooms', {
+          branchId: currentBranch.id,
+        });
+        return rooms.find(r => r.kind === 'diagnostico' && r.active) || null;
+      }
+
+      // Modo Supabase
       const {
         data
       } = await supabase.from('rooms').select('*').eq('kind', 'diagnostico').eq('branch_id', currentBranch.id).eq('active', true).maybeSingle();
@@ -126,9 +169,20 @@ export function DashboardSidebar({
   const {
     data: quirofanoRoom
   } = useQuery({
-    queryKey: ['quirofano-room', currentBranch?.id],
+    queryKey: ['quirofano-room', currentBranch?.id, connectionMode],
     queryFn: async () => {
       if (!currentBranch?.id) return null;
+
+      // En modo local, usar Tauri command
+      if (isLocalMode) {
+        console.log('[DashboardSidebar] Getting quirofano room from PostgreSQL local');
+        const rooms = await invoke<RoomLocal[]>('get_rooms', {
+          branchId: currentBranch.id,
+        });
+        return rooms.find(r => r.kind === 'quirofano' && r.active) || null;
+      }
+
+      // Modo Supabase
       const {
         data
       } = await supabase.from('rooms').select('*').eq('kind', 'quirofano').eq('branch_id', currentBranch.id).eq('active', true).maybeSingle();
