@@ -32,3 +32,4 @@ dist-ssr
 
 # Tauri
 src-tauri/target/
+bun.lockb
