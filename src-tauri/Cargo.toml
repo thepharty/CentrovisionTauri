@@ -12,6 +12,10 @@ rust-version = "1.77.2"
 name = "centrovision_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = []
+stt = ["tauri-plugin-stt"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -62,5 +66,6 @@ thiserror = "1"
 anyhow = "1"
 
 # STT plugin only on macOS (requires Vosk native library)
+# Enable with: cargo build --features stt
 [target.'cfg(target_os = "macos")'.dependencies]
-tauri-plugin-stt = "0.1"
+tauri-plugin-stt = { version = "0.1", optional = true }

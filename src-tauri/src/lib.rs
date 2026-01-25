@@ -30,8 +30,9 @@ pub struct AppState {
 pub fn run() {
     let mut builder = tauri::Builder::default();
 
-    // Add STT plugin only on macOS
-    #[cfg(target_os = "macos")]
+    // Add STT plugin only on macOS when the 'stt' feature is enabled
+    // (requires Vosk native library installed locally)
+    #[cfg(all(target_os = "macos", feature = "stt"))]
     {
         builder = builder.plugin(tauri_plugin_stt::init());
     }
