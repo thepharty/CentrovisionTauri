@@ -7,6 +7,7 @@ import { ThemeProvider } from "next-themes";
 import { AuthProvider } from "@/hooks/useAuth";
 import { BranchProvider } from "@/hooks/useBranch";
 import { NetworkStatusProvider } from "@/hooks/useNetworkStatus";
+import { UpdateChecker } from "@/components/UpdateChecker";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
@@ -44,6 +45,7 @@ const App = () => (
       <TooltipProvider>
         <Toaster />
         <Sonner />
+        <UpdateChecker />
         <BrowserRouter>
           <AuthProvider>
             <BranchProvider>

@@ -23,7 +23,7 @@ tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 tauri-plugin-shell = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-store = "2"
-tauri-plugin-stt = "0.1"
+tauri-plugin-updater = "2"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -60,3 +60,7 @@ log = "0.4"
 # Error handling
 thiserror = "1"
 anyhow = "1"
+
+# STT plugin only on macOS (requires Vosk native library)
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri-plugin-stt = "0.1"

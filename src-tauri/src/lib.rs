@@ -28,7 +28,16 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // Add STT plugin only on macOS
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.plugin(tauri_plugin_stt::init());
+    }
+
+    builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // Initialize logging in debug mode
             if cfg!(debug_assertions) {
@@ -134,7 +143,6 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
-        .plugin(tauri_plugin_stt::init())
         .invoke_handler(tauri::generate_handler![
             // Connection status command (NEW)
             commands::get_connection_status,
