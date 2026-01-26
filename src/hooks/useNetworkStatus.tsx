@@ -59,9 +59,15 @@ export const NetworkStatusProvider = ({ children }: { children: ReactNode }) => 
         try {
           const connStatus = await getConnectionStatus();
           setConnectionStatus(connStatus);
-          setConnectionMode(connStatus.mode as ConnectionMode);
+          const newMode = connStatus.mode as ConnectionMode;
+          setConnectionMode(prev => {
+            if (prev !== newMode) {
+              console.warn(`[NetworkStatus] Connection mode changed: ${prev} -> ${newMode} | supabase=${connStatus.supabase_available} local=${connStatus.local_available} ip=${connStatus.local_server_ip}`);
+            }
+            return newMode;
+          });
         } catch (e) {
-          console.warn('Failed to get connection status:', e);
+          console.warn('[NetworkStatus] Failed to get connection status:', e);
           // Fallback based on online status
           setConnectionMode(online ? 'supabase' : 'offline');
         }

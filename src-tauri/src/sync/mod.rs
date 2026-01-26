@@ -1,10 +1,10 @@
+use crate::AppState;
 use crate::db::Database;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-
-const SUPABASE_URL: &str = "https://dlfgyupitvrqbxnucwsf.supabase.co";
+use std::sync::Arc;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SyncResult {
@@ -17,13 +17,15 @@ pub struct SyncResult {
 pub struct SyncManager {
     client: Client,
     api_key: String,
+    supabase_url: String,
 }
 
 impl SyncManager {
-    pub fn new(api_key: &str) -> Self {
+    pub fn new(api_key: &str, supabase_url: &str) -> Self {
         SyncManager {
             client: Client::new(),
             api_key: api_key.to_string(),
+            supabase_url: supabase_url.to_string(),
         }
     }
 
@@ -75,7 +77,7 @@ impl SyncManager {
     }
 
     async fn sync_table(&self, db: &Database, table: &str, columns: &str) -> Result<usize, String> {
-        let url = format!("{}/rest/v1/{}?select={}", SUPABASE_URL, table, columns);
+        let url = format!("{}/rest/v1/{}?select={}", self.supabase_url, table, columns);
 
         let response = self
             .client
@@ -154,20 +156,26 @@ impl SyncManager {
 // Tauri command to trigger sync
 #[tauri::command]
 pub async fn trigger_initial_sync(
-    db: tauri::State<'_, Database>,
+    app_state: tauri::State<'_, Arc<AppState>>,
     api_key: String,
 ) -> Result<SyncResult, String> {
-    let sync_manager = SyncManager::new(&api_key);
-    sync_manager.initial_sync(&db).await
+    let supabase_url = &app_state.config.supabase.url;
+    let sync_manager = SyncManager::new(&api_key, supabase_url);
+    sync_manager.initial_sync(&app_state.db).await
 }
 
 #[tauri::command]
-pub async fn check_network_status() -> Result<bool, String> {
+pub async fn check_network_status(
+    app_state: tauri::State<'_, Arc<AppState>>,
+) -> Result<bool, String> {
     let client = Client::new();
-    // Use Supabase URL instead of Google (Windows firewall blocks Google)
-    match client.get(format!("{}/rest/v1/", SUPABASE_URL)).send().await {
+    let supabase_url = &app_state.config.supabase.url;
+    match client.get(format!("{}/rest/v1/", supabase_url)).send().await {
         Ok(_) => Ok(true),
-        Err(_) => Ok(false),
+        Err(e) => {
+            log::warn!("[NetworkCheck] Failed to reach Supabase: {}", e);
+            Ok(false)
+        }
     }
 }
 
@@ -261,7 +269,7 @@ impl SyncManager {
     }
 
     async fn sync_item_to_supabase(&self, item: &SyncQueueItem) -> Result<(), String> {
-        let url = format!("{}/rest/v1/{}", SUPABASE_URL, item.table_name);
+        let url = format!("{}/rest/v1/{}", self.supabase_url, item.table_name);
 
         match item.action.as_str() {
             "INSERT" => {
@@ -365,14 +373,17 @@ impl SyncManager {
 
 #[tauri::command]
 pub async fn process_sync_queue(
-    db: tauri::State<'_, Database>,
+    app_state: tauri::State<'_, Arc<AppState>>,
     api_key: String,
 ) -> Result<SyncUploadResult, String> {
-    let sync_manager = SyncManager::new(&api_key);
-    sync_manager.process_sync_queue(&db).await
+    let supabase_url = &app_state.config.supabase.url;
+    let sync_manager = SyncManager::new(&api_key, supabase_url);
+    sync_manager.process_sync_queue(&app_state.db).await
 }
 
 #[tauri::command]
-pub async fn get_pending_sync_count(db: tauri::State<'_, Database>) -> Result<i64, String> {
-    db.get_pending_sync_count().map_err(|e| e.to_string())
+pub async fn get_pending_sync_count(
+    app_state: tauri::State<'_, Arc<AppState>>,
+) -> Result<i64, String> {
+    app_state.db.get_pending_sync_count().map_err(|e| e.to_string())
 }

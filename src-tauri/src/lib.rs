@@ -133,10 +133,10 @@ pub fn run() {
             };
             let app_state = Arc::new(app_state);
 
-            // Manage database state (legacy - for existing commands that use State<Database>)
+            // Manage Arc<Database> for commands that use State<Arc<Database>>
             app.manage(db);
 
-            // Manage full app state
+            // Manage full app state for commands that use State<Arc<AppState>>
             app.manage(app_state);
 
             Ok(())

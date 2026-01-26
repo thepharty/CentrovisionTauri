@@ -145,7 +145,9 @@ impl ConnectionManager {
 
         // Check local PostgreSQL
         let local_ok = if let Some(ref pool) = self.postgres_pool {
-            pool.health_check().await
+            let result = pool.health_check().await;
+            log::info!("[HealthCheck] Local PostgreSQL: {}", if result { "available" } else { "unavailable" });
+            result
         } else {
             false
         };
@@ -163,7 +165,8 @@ impl ConnectionManager {
         // Update mode if changed
         let mut current = self.current_mode.write().await;
         if *current != new_mode {
-            log::info!("Connection mode changed: {:?} -> {:?}", *current, new_mode);
+            log::warn!("[HealthCheck] CONNECTION MODE CHANGED: {:?} -> {:?} (supabase={}, local={})",
+                *current, new_mode, supabase_ok, local_ok);
             *current = new_mode;
         }
     }
@@ -171,21 +174,26 @@ impl ConnectionManager {
     /// Check if Supabase is reachable
     async fn check_supabase(&self) -> bool {
         if self.supabase_url.is_empty() {
+            log::warn!("[HealthCheck] Supabase URL is empty - cannot check");
             return false;
         }
 
         // Try to reach Supabase health endpoint
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(20))
+            .timeout(std::time::Duration::from_secs(10))
             .build();
 
         let client = match client {
             Ok(c) => c,
-            Err(_) => return false,
+            Err(e) => {
+                log::error!("[HealthCheck] Failed to create HTTP client: {}", e);
+                return false;
+            }
         };
 
         // Just check if we can reach the Supabase URL
         let health_url = format!("{}/rest/v1/", self.supabase_url);
+        log::info!("[HealthCheck] Checking Supabase at: {}", health_url);
 
         match client.get(&health_url)
             .header("apikey", &self.config.supabase.anon_key)
@@ -193,15 +201,27 @@ impl ConnectionManager {
             .await
         {
             Ok(response) => {
+                let status = response.status();
                 // Any response (even 400) means the server is reachable
-                let is_reachable = response.status().as_u16() < 500;
-                if !is_reachable {
-                    log::warn!("Supabase returned error status: {}", response.status());
+                let is_reachable = status.as_u16() < 500;
+                if is_reachable {
+                    log::info!("[HealthCheck] Supabase reachable (HTTP {})", status);
+                } else {
+                    log::warn!("[HealthCheck] Supabase returned server error: HTTP {}", status);
                 }
                 is_reachable
             }
             Err(e) => {
-                log::warn!("Failed to reach Supabase: {}", e);
+                // Detailed error diagnosis
+                if e.is_timeout() {
+                    log::error!("[HealthCheck] TIMEOUT connecting to Supabase (>10s) - possible slow network or firewall");
+                } else if e.is_connect() {
+                    log::error!("[HealthCheck] CONNECTION REFUSED to Supabase - possible firewall or DNS issue");
+                } else if e.is_request() {
+                    log::error!("[HealthCheck] REQUEST ERROR to Supabase: {} - possible TLS/certificate issue", e);
+                } else {
+                    log::error!("[HealthCheck] UNKNOWN ERROR reaching Supabase: {}", e);
+                }
                 false
             }
         }
