@@ -3820,6 +3820,33 @@ pub async fn get_consent_signature_by_surgery(
     Err("No database connection available".to_string())
 }
 
+/// Get consent signatures by patient ID
+#[tauri::command]
+pub async fn get_consent_signatures_by_patient(
+    app_state: State<'_, Arc<AppState>>,
+    patient_id: String,
+) -> Result<Vec<ConsentSignature>, String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("get_consent_signatures_by_patient: Using local PostgreSQL for patient: {}", patient_id);
+        return pool.get_consent_signatures_by_patient(&patient_id).await;
+    }
+    Err("No database connection available".to_string())
+}
+
+/// Link a consent signature to a surgery
+#[tauri::command]
+pub async fn link_consent_signature_to_surgery(
+    app_state: State<'_, Arc<AppState>>,
+    signature_id: String,
+    surgery_id: String,
+) -> Result<(), String> {
+    if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
+        log::info!("link_consent_signature_to_surgery: Linking signature {} to surgery {}", signature_id, surgery_id);
+        return pool.link_consent_signature_to_surgery(&signature_id, &surgery_id).await;
+    }
+    Err("No database connection available".to_string())
+}
+
 // ============================================================
 // ROOM INVENTORY - TYPES
 // ============================================================

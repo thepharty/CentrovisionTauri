@@ -586,8 +586,9 @@ export default function Surgery() {
   });
 
   // Query para obtener la firma del consentimiento
+  // Primero busca por surgery_id, si no encuentra busca por patient_id + fecha
   const { data: consentSignature } = useQuery({
-    queryKey: ['consent-signature', surgery?.id, connectionMode],
+    queryKey: ['consent-signature', surgery?.id, encounter?.patient_id, connectionMode],
     queryFn: async () => {
       if (!surgery?.id) return null;
 
@@ -597,10 +598,30 @@ export default function Surgery() {
         const signature = await invoke<ConsentSignatureLocal | null>('get_consent_signature_by_surgery', {
           surgeryId: surgery.id,
         });
-        return signature;
+        if (signature) return signature;
+
+        // Fallback: buscar por patient_id + fecha del encounter
+        if (encounter?.patient_id && encounter?.created_at) {
+          const encounterDate = new Date(encounter.created_at);
+          const startOfDay = new Date(encounterDate);
+          startOfDay.setHours(0, 0, 0, 0);
+          const endOfDay = new Date(encounterDate);
+          endOfDay.setHours(23, 59, 59, 999);
+
+          const signatures = await invoke<ConsentSignatureLocal[]>('get_consent_signatures_by_patient', {
+            patientId: encounter.patient_id,
+          }).catch(() => [] as ConsentSignatureLocal[]);
+
+          const todaySignature = signatures.find(s => {
+            const signedAt = new Date(s.signed_at);
+            return signedAt >= startOfDay && signedAt <= endOfDay;
+          });
+          return todaySignature || null;
+        }
+        return null;
       }
 
-      // Modo Supabase
+      // Modo Supabase - buscar por surgery_id
       const { data, error } = await (supabase as any)
         .from('consent_signatures')
         .select('*')
@@ -608,7 +629,7 @@ export default function Surgery() {
         .maybeSingle();
 
       if (error) throw error;
-      return data as {
+      if (data) return data as {
         id: string;
         patient_name: string;
         witness_name: string;
@@ -616,7 +637,42 @@ export default function Surgery() {
         witness_signature: string;
         consent_text: string;
         signed_at: string;
-      } | null;
+      };
+
+      // Fallback: buscar por patient_id + fecha del encounter
+      if (encounter?.patient_id && encounter?.created_at) {
+        const encounterDate = new Date(encounter.created_at);
+        const startOfDay = new Date(encounterDate);
+        startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(encounterDate);
+        endOfDay.setHours(23, 59, 59, 999);
+
+        const { data: fallbackData, error: fallbackError } = await (supabase as any)
+          .from('consent_signatures')
+          .select('*')
+          .eq('patient_id', encounter.patient_id)
+          .gte('signed_at', startOfDay.toISOString())
+          .lte('signed_at', endOfDay.toISOString())
+          .order('signed_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (fallbackError) {
+          console.error('Error fetching consent by patient_id fallback:', fallbackError);
+          return null;
+        }
+        return fallbackData as {
+          id: string;
+          patient_name: string;
+          witness_name: string;
+          patient_signature: string;
+          witness_signature: string;
+          consent_text: string;
+          signed_at: string;
+        } | null;
+      }
+
+      return null;
     },
     enabled: !!surgery?.id,
   });
@@ -1119,6 +1175,7 @@ export default function Surgery() {
           : [];
         const existingSurgery = existingSurgeries.find(s => s.encounter_id === encounterId);
 
+        let localSurgeryId: string;
         if (existingSurgery) {
           await invoke('update_surgery', {
             id: existingSurgery.id,
@@ -1130,8 +1187,9 @@ export default function Surgery() {
               consentimiento_informado: consentimientoInformado,
             },
           });
+          localSurgeryId = existingSurgery.id;
         } else {
-          await invoke('create_surgery', {
+          const newSurgery = await invoke<SurgeryLocal>('create_surgery', {
             surgery: {
               encounter_id: encounterId,
               tipo_cirugia: tipoCirugia,
@@ -1141,6 +1199,36 @@ export default function Surgery() {
               consentimiento_informado: consentimientoInformado,
             },
           });
+          localSurgeryId = newSurgery.id;
+        }
+
+        // Vincular firma de consentimiento existente al surgery
+        if (encounter?.patient_id) {
+          try {
+            const signatures = await invoke<ConsentSignatureLocal[]>('get_consent_signatures_by_patient', {
+              patientId: encounter.patient_id,
+            });
+
+            const encounterDate = new Date(encounter.created_at);
+            const startOfDay = new Date(encounterDate);
+            startOfDay.setHours(0, 0, 0, 0);
+            const endOfDay = new Date(encounterDate);
+            endOfDay.setHours(23, 59, 59, 999);
+
+            const unlinkedSignature = signatures.find(s => {
+              const signedAt = new Date(s.signed_at);
+              return !s.surgery_id && signedAt >= startOfDay && signedAt <= endOfDay;
+            });
+
+            if (unlinkedSignature) {
+              await invoke('link_consent_signature_to_surgery', {
+                signatureId: unlinkedSignature.id,
+                surgeryId: localSurgeryId,
+              });
+            }
+          } catch (err) {
+            console.error('Error linking consent signature:', err);
+          }
         }
 
         // 4. Guardar diagnóstico si no existe
@@ -1237,6 +1325,33 @@ export default function Surgery() {
         surgeryId = newSurgery.id;
       }
 
+      // Vincular firma de consentimiento existente al surgery_id
+      if (encounter?.patient_id) {
+        const encounterDate = new Date(encounter.created_at);
+        const startOfDay = new Date(encounterDate);
+        startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(encounterDate);
+        endOfDay.setHours(23, 59, 59, 999);
+
+        const { data: unlinkedSignature } = await (supabase as any)
+          .from('consent_signatures')
+          .select('id')
+          .eq('patient_id', encounter.patient_id)
+          .is('surgery_id', null)
+          .gte('signed_at', startOfDay.toISOString())
+          .lte('signed_at', endOfDay.toISOString())
+          .order('signed_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (unlinkedSignature) {
+          await (supabase as any)
+            .from('consent_signatures')
+            .update({ surgery_id: surgeryId })
+            .eq('id', unlinkedSignature.id);
+        }
+      }
+
       // Subir archivos si hay
       if (files.length > 0) {
         await uploadFiles(surgeryId);
@@ -1269,6 +1384,7 @@ export default function Surgery() {
       toast.success('Datos guardados correctamente');
       queryClient.invalidateQueries({ queryKey: ['encounter', encounterId] });
       queryClient.invalidateQueries({ queryKey: ['surgery', encounterId] });
+      queryClient.invalidateQueries({ queryKey: ['consent-signature'] });
       queryClient.invalidateQueries({ queryKey: ['previous-encounters-list'] });
     },
     onError: (error: any) => {

@@ -310,6 +310,8 @@ pub fn run() {
             commands::update_app_setting,
             // Consent signatures
             commands::get_consent_signature_by_surgery,
+            commands::get_consent_signatures_by_patient,
+            commands::link_consent_signature_to_surgery,
             // Room inventory
             commands::get_room_inventory_categories,
             commands::create_room_inventory_category,

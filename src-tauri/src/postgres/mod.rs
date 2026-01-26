@@ -4800,6 +4800,69 @@ impl PostgresPool {
         }
     }
 
+    /// Get consent signatures by patient ID
+    pub async fn get_consent_signatures_by_patient(&self, patient_id: &str) -> Result<Vec<ConsentSignature>, String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let patient_uuid = uuid::Uuid::parse_str(patient_id).map_err(|e| e.to_string())?;
+
+        let rows = client
+            .query(
+                "SELECT id, surgery_id, procedure_id, patient_id, patient_signature, patient_name,
+                        witness_signature, witness_name, consent_text, pdf_url, signed_at, signed_by, branch_id
+                 FROM consent_signatures
+                 WHERE patient_id = $1
+                 ORDER BY signed_at DESC",
+                &[&patient_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let signatures = rows.iter().map(|row| {
+            let id: uuid::Uuid = row.get("id");
+            let surgery_id: Option<uuid::Uuid> = row.get("surgery_id");
+            let procedure_id: Option<uuid::Uuid> = row.get("procedure_id");
+            let patient_id: uuid::Uuid = row.get("patient_id");
+            let signed_at: chrono::DateTime<chrono::Utc> = row.get("signed_at");
+            let signed_by: Option<uuid::Uuid> = row.get("signed_by");
+            let branch_id: Option<uuid::Uuid> = row.get("branch_id");
+
+            ConsentSignature {
+                id: id.to_string(),
+                surgery_id: surgery_id.map(|u| u.to_string()),
+                procedure_id: procedure_id.map(|u| u.to_string()),
+                patient_id: patient_id.to_string(),
+                patient_signature: row.get("patient_signature"),
+                patient_name: row.get("patient_name"),
+                witness_signature: row.get("witness_signature"),
+                witness_name: row.get("witness_name"),
+                consent_text: row.get("consent_text"),
+                pdf_url: row.get("pdf_url"),
+                signed_at: signed_at.to_rfc3339(),
+                signed_by: signed_by.map(|u| u.to_string()),
+                branch_id: branch_id.map(|u| u.to_string()),
+            }
+        }).collect();
+
+        Ok(signatures)
+    }
+
+    /// Link a consent signature to a surgery by updating its surgery_id
+    pub async fn link_consent_signature_to_surgery(&self, signature_id: &str, surgery_id: &str) -> Result<(), String> {
+        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        let sig_uuid = uuid::Uuid::parse_str(signature_id).map_err(|e| e.to_string())?;
+        let surgery_uuid = uuid::Uuid::parse_str(surgery_id).map_err(|e| e.to_string())?;
+
+        client
+            .execute(
+                "UPDATE consent_signatures SET surgery_id = $1 WHERE id = $2",
+                &[&surgery_uuid, &sig_uuid],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
     // ============================================================
     // ROOM INVENTORY
     // ============================================================
