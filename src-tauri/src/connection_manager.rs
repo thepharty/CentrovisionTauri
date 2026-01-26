@@ -97,8 +97,9 @@ impl ConnectionManager {
             supabase_url,
         };
 
-        // Do initial health check
-        manager.check_connections().await;
+        // Skip initial blocking check - let background task handle it
+        // This allows slow devices to start the app immediately
+        // The background task in lib.rs runs every 10s to verify connection
 
         Ok(manager)
     }
@@ -175,7 +176,7 @@ impl ConnectionManager {
 
         // Try to reach Supabase health endpoint
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(20))
             .build();
 
         let client = match client {
@@ -216,14 +217,13 @@ impl ConnectionManager {
         self.local_available.load(Ordering::SeqCst)
     }
 
-    /// Get the PostgreSQL pool if available and we should use it
+    /// Get the PostgreSQL pool if available
+    /// Returns the pool if it exists, regardless of connection mode
+    /// This allows using local PostgreSQL when configured, even if Supabase is available
     pub async fn get_postgres_pool(&self) -> Option<Arc<PostgresPool>> {
-        let mode = self.get_mode().await;
-        if mode == ConnectionMode::Local {
-            self.postgres_pool.clone()
-        } else {
-            None
-        }
+        let pool = self.postgres_pool.clone();
+        log::info!("get_postgres_pool: pool exists = {}", pool.is_some());
+        pool
     }
 
     /// Check if we should use local PostgreSQL for this operation

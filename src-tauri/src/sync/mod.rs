@@ -164,8 +164,9 @@ pub async fn trigger_initial_sync(
 #[tauri::command]
 pub async fn check_network_status() -> Result<bool, String> {
     let client = Client::new();
-    match client.get("https://www.google.com").send().await {
-        Ok(response) => Ok(response.status().is_success()),
+    // Use Supabase URL instead of Google (Windows firewall blocks Google)
+    match client.get(format!("{}/rest/v1/", SUPABASE_URL)).send().await {
+        Ok(_) => Ok(true),
         Err(_) => Ok(false),
     }
 }

@@ -109,7 +109,7 @@ export default function ConsentSignatures() {
   const [responsableName, setResponsableName] = useState('');
   const [surgeryDescription, setSurgeryDescription] = useState('');
 
-  // Obtener cirugías de hoy sin firma
+  // Obtener citas de cirugía de hoy sin firma
   const { data: pendingSurgeries = [], isLoading } = useQuery({
     queryKey: ['pending-signatures', currentBranch?.id],
     queryFn: async () => {
@@ -125,6 +125,9 @@ export default function ConsentSignatures() {
         .select(`
           id,
           starts_at,
+          doctor_id,
+          post_op_type,
+          reason,
           patient:patients(id, first_name, last_name, dob, code)
         `)
         .eq('branch_id', currentBranch.id)
@@ -134,26 +137,23 @@ export default function ConsentSignatures() {
         .is('deleted_at', null);
 
       if (aptError) throw aptError;
+      console.log('[ConsentSignatures] Citas de cirugía encontradas:', appointments?.length, appointments);
       if (!appointments || appointments.length === 0) return [];
 
-      // Obtener encounters y surgeries de esas citas
-      const appointmentIds = appointments.map(a => a.id);
+      // Obtener pacientes que ya firmaron hoy
+      const patientIds = appointments.map(a => (a.patient as any)?.id).filter(Boolean);
 
-      const { data: encounters, error: encError } = await supabase
-        .from('encounters')
-        .select(`
-          id,
-          appointment_id,
-          doctor_id,
-          surgeries(id, tipo_cirugia, ojo_operar, consent_signature_id)
-        `)
-        .in('appointment_id', appointmentIds)
-        .is('deleted_at', null);
+      const { data: existingSignatures } = await (supabase as any)
+        .from('consent_signatures')
+        .select('patient_id, signed_at')
+        .in('patient_id', patientIds)
+        .gte('signed_at', startOfDay)
+        .lte('signed_at', endOfDay);
 
-      if (encError) throw encError;
+      const signedPatientIds = new Set(existingSignatures?.map(s => s.patient_id) || []);
 
       // Obtener los nombres de los doctores
-      const doctorIds = encounters?.map(e => e.doctor_id).filter(Boolean) as string[];
+      const doctorIds = appointments.map(a => a.doctor_id).filter(Boolean) as string[];
       let doctorMap: Record<string, string> = {};
 
       if (doctorIds.length > 0) {
@@ -170,32 +170,30 @@ export default function ConsentSignatures() {
         }
       }
 
-      // Filtrar cirugías sin firma
+      // Filtrar citas cuyos pacientes aún no han firmado hoy
       const pending: PendingSurgery[] = [];
 
       for (const apt of appointments) {
-        const encounter = encounters?.find(e => e.appointment_id === apt.id);
-        if (!encounter) continue;
+        const patient = apt.patient as any;
+        if (!patient) continue;
 
-        const surgeries = encounter.surgeries || [];
-        for (const surgery of surgeries) {
-          // Solo incluir si no tiene firma
-          if (!surgery.consent_signature_id) {
-            const patient = apt.patient as any;
-            const doctorName = encounter.doctor_id ? (doctorMap[encounter.doctor_id] || 'Doctor no asignado') : 'Doctor no asignado';
-            pending.push({
-              id: surgery.id,
-              tipo_cirugia: surgery.tipo_cirugia,
-              ojo_operar: surgery.ojo_operar,
-              patient_name: `${patient.first_name} ${patient.last_name}`,
-              patient_id: patient.id,
-              patient_dob: patient.dob,
-              patient_code: patient.code,
-              doctor_name: doctorName,
-              appointment_time: format(new Date(apt.starts_at), 'h:mm a', { locale: es }),
-              encounter_id: encounter.id,
-            });
-          }
+        // Solo incluir si el paciente NO ha firmado hoy
+        if (!signedPatientIds.has(patient.id)) {
+          const doctorName = apt.doctor_id ? (doctorMap[apt.doctor_id] || 'Doctor no asignado') : 'Doctor no asignado';
+          const surgeryType = apt.post_op_type || apt.reason || 'Cirugía';
+
+          pending.push({
+            id: apt.id, // Usar appointment_id como id
+            tipo_cirugia: surgeryType,
+            ojo_operar: '', // Se llenará en el formulario
+            patient_name: `${patient.first_name} ${patient.last_name}`,
+            patient_id: patient.id,
+            patient_dob: patient.dob,
+            patient_code: patient.code,
+            doctor_name: doctorName,
+            appointment_time: format(new Date(apt.starts_at), 'h:mm a', { locale: es }),
+            encounter_id: '', // Ya no se usa, pero mantenemos por compatibilidad
+          });
         }
       }
 
@@ -237,11 +235,10 @@ export default function ConsentSignatures() {
         year: today.getFullYear(),
       });
 
-      // Crear el registro de firma
-      const { data: signature, error: sigError } = await supabase
+      // Crear el registro de firma (sin surgery_id ya que aún no existe la cirugía)
+      const { data: signature, error: sigError } = await (supabase as any)
         .from('consent_signatures')
         .insert({
-          surgery_id: selectedSurgery.id,
           patient_id: selectedSurgery.patient_id,
           patient_signature: patientSignature,
           patient_name: patientName.trim(),
@@ -254,14 +251,6 @@ export default function ConsentSignatures() {
         .single();
 
       if (sigError) throw sigError;
-
-      // Actualizar la cirugía con la referencia a la firma
-      const { error: updateError } = await supabase
-        .from('surgeries')
-        .update({ consent_signature_id: signature.id })
-        .eq('id', selectedSurgery.id);
-
-      if (updateError) throw updateError;
 
       return signature;
     },

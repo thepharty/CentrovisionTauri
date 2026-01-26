@@ -45,7 +45,6 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc4NUNGRTgxQThEMjYyOEIKUldTTFl0S29nZjVjZVAxTTBmUlV4ZVYxL1ZqU2RmV1F1dDRBK3pmY0p3aXlCSDZ0cnBwY1Y3Vy8K",
       "endpoints": [
         "https://github.com/thepharty/CentrovisionTauri/releases/latest/download/latest.json"
       ],

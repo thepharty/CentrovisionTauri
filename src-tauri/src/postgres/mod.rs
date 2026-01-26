@@ -291,7 +291,7 @@ impl PostgresPool {
 
         let rows = client
             .query(
-                "SELECT id, name, kind, branch_id, active
+                "SELECT id, name, kind::text, branch_id, active
                  FROM rooms ORDER BY name",
                 &[],
             )
@@ -1251,7 +1251,7 @@ impl PostgresPool {
 
         let result = client
             .query_opt(
-                "SELECT id, encounter_id, side, av_sc, av_cc,
+                "SELECT id, encounter_id, side::text, av_sc, av_cc,
                         ref_sphere, ref_cyl, ref_axis,
                         ref_subj_sphere, ref_subj_cyl, ref_subj_axis,
                         rx_sphere, rx_cyl, rx_axis, rx_add,
@@ -1273,7 +1273,7 @@ impl PostgresPool {
 
         let rows = client
             .query(
-                "SELECT id, encounter_id, side, av_sc, av_cc,
+                "SELECT id, encounter_id, side::text, av_sc, av_cc,
                         ref_sphere, ref_cyl, ref_axis,
                         ref_subj_sphere, ref_subj_cyl, ref_subj_axis,
                         rx_sphere, rx_cyl, rx_axis, rx_add,
@@ -1496,7 +1496,7 @@ impl PostgresPool {
 
         let rows = client
             .query(
-                "SELECT id, study_id, file_path, mime_type, side, extracted_summary
+                "SELECT id, study_id, file_path, mime_type, side::text, extracted_summary
                  FROM study_files
                  WHERE study_id = $1
                  ORDER BY created_at",
@@ -1652,7 +1652,7 @@ impl PostgresPool {
 
         let rows = client
             .query(
-                "SELECT s.id, s.appointment_id, s.patient_id, s.surgery_type::text, s.eye,
+                "SELECT s.id, s.appointment_id, s.patient_id, s.surgery_type::text, s.eye::text,
                         s.date, s.status::text, s.surgeon_id, s.notes,
                         p.id as p_id, p.first_name, p.last_name, p.code, p.phone,
                         pr.user_id, pr.full_name, pr.specialty
@@ -1683,7 +1683,7 @@ impl PostgresPool {
 
         let rows = client
             .query(
-                "SELECT s.id, s.appointment_id, s.patient_id, s.surgery_type::text, s.eye,
+                "SELECT s.id, s.appointment_id, s.patient_id, s.surgery_type::text, s.eye::text,
                         s.date, s.status::text, s.surgeon_id, s.notes,
                         p.id as p_id, p.first_name, p.last_name, p.code, p.phone,
                         pr.user_id, pr.full_name, pr.specialty
@@ -1831,7 +1831,7 @@ impl PostgresPool {
         // Fetch updated surgery
         let row = client
             .query_one(
-                "SELECT s.id, s.appointment_id, s.patient_id, s.surgery_type::text, s.eye,
+                "SELECT s.id, s.appointment_id, s.patient_id, s.surgery_type::text, s.eye::text,
                         s.date, s.status::text, s.surgeon_id, s.notes,
                         p.id as p_id, p.first_name, p.last_name, p.code, p.phone,
                         pr.user_id, pr.full_name, pr.specialty
@@ -1940,7 +1940,7 @@ impl PostgresPool {
 
         let rows = client
             .query(
-                "SELECT proc.id, proc.appointment_id, proc.patient_id, proc.procedure_type::text, proc.eye,
+                "SELECT proc.id, proc.appointment_id, proc.patient_id, proc.procedure_type::text, proc.eye::text,
                         proc.date, proc.status::text, proc.performed_by, proc.notes,
                         p.id as p_id, p.first_name, p.last_name, p.code, p.phone,
                         pr.user_id, pr.full_name, pr.specialty
@@ -1964,7 +1964,7 @@ impl PostgresPool {
 
         let rows = client
             .query(
-                "SELECT proc.id, proc.appointment_id, proc.patient_id, proc.procedure_type::text, proc.eye,
+                "SELECT proc.id, proc.appointment_id, proc.patient_id, proc.procedure_type::text, proc.eye::text,
                         proc.date, proc.status::text, proc.performed_by, proc.notes,
                         p.id as p_id, p.first_name, p.last_name, p.code, p.phone,
                         pr.user_id, pr.full_name, pr.specialty
@@ -2077,7 +2077,7 @@ impl PostgresPool {
         // Fetch updated procedure
         let row = client
             .query_one(
-                "SELECT proc.id, proc.appointment_id, proc.patient_id, proc.procedure_type::text, proc.eye,
+                "SELECT proc.id, proc.appointment_id, proc.patient_id, proc.procedure_type::text, proc.eye::text,
                         proc.date, proc.status::text, proc.performed_by, proc.notes,
                         p.id as p_id, p.first_name, p.last_name, p.code, p.phone,
                         pr.user_id, pr.full_name, pr.specialty
@@ -3710,7 +3710,19 @@ impl PostgresPool {
 
     /// Get CRM pipelines by branch
     pub async fn get_crm_pipelines(&self, branch_id: &str, status: Option<&str>) -> Result<Vec<CRMPipeline>, String> {
-        let client = self.pool.get().await.map_err(|e| e.to_string())?;
+        log::info!("PostgresPool::get_crm_pipelines: branch_id={}, status={:?}", branch_id, status);
+
+        let client = match self.pool.get().await {
+            Ok(c) => {
+                log::info!("PostgresPool::get_crm_pipelines: Got client from pool");
+                c
+            }
+            Err(e) => {
+                log::error!("PostgresPool::get_crm_pipelines: Failed to get client: {}", e);
+                return Err(e.to_string());
+            }
+        };
+
         let branch_uuid = uuid::Uuid::parse_str(branch_id).map_err(|e| e.to_string())?;
 
         let query = if let Some(s) = status {
@@ -4641,7 +4653,7 @@ impl PostgresPool {
             .query(
                 "SELECT al.id, al.pipeline_id, al.activity_type::text, al.from_stage, al.to_stage,
                         al.reason, al.created_by, al.branch_id, al.created_at,
-                        p.eye_side,
+                        p.eye_side::text,
                         pat.first_name as patient_first_name, pat.last_name as patient_last_name,
                         pt.name as procedure_name, pt.color as procedure_color,
                         pr.full_name as creator_name
@@ -6067,7 +6079,7 @@ impl PostgresPool {
             SELECT
                 s.id::text,
                 s.study_type as title,
-                (SELECT sf.side FROM study_files sf WHERE sf.study_id = s.id LIMIT 1) as eye_side,
+                (SELECT sf.side::text FROM study_files sf WHERE sf.study_id = s.id LIMIT 1) as eye_side,
                 s.date::text as created_at,
                 pt.code as patient_code,
                 COALESCE(pt.first_name, '') as patient_first_name,

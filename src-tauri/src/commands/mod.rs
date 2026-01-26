@@ -3028,10 +3028,23 @@ pub async fn get_crm_pipelines(
     branch_id: String,
     status: Option<String>,
 ) -> Result<Vec<CRMPipeline>, String> {
+    log::info!("get_crm_pipelines: Starting, branch_id={}, status={:?}", branch_id, status);
+
     if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
-        log::info!("get_crm_pipelines: Using local PostgreSQL");
-        return pool.get_crm_pipelines(&branch_id, status.as_deref()).await;
+        log::info!("get_crm_pipelines: Got pool, executing query");
+        match pool.get_crm_pipelines(&branch_id, status.as_deref()).await {
+            Ok(data) => {
+                log::info!("get_crm_pipelines: Success, got {} pipelines", data.len());
+                return Ok(data);
+            }
+            Err(e) => {
+                log::error!("get_crm_pipelines: Query failed: {}", e);
+                return Err(e);
+            }
+        }
     }
+
+    log::warn!("get_crm_pipelines: No pool available");
     Err("No database connection available".to_string())
 }
 
@@ -3735,10 +3748,23 @@ pub struct AppSetting {
 pub async fn get_app_settings(
     app_state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<AppSetting>, String> {
+    log::info!("get_app_settings: Starting");
+
     if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
-        log::info!("get_app_settings: Using local PostgreSQL");
-        return pool.get_app_settings().await;
+        log::info!("get_app_settings: Got pool, executing query");
+        match pool.get_app_settings().await {
+            Ok(data) => {
+                log::info!("get_app_settings: Success, got {} settings", data.len());
+                return Ok(data);
+            }
+            Err(e) => {
+                log::error!("get_app_settings: Query failed: {}", e);
+                return Err(e);
+            }
+        }
     }
+
+    log::warn!("get_app_settings: No pool available");
     Err("No database connection available".to_string())
 }
 

@@ -70,8 +70,9 @@ impl AppConfig {
         let config_path = Self::get_config_path()?;
 
         if !config_path.exists() {
-            log::info!("No config file found at {:?}, using defaults (no local server)", config_path);
-            return Ok(Self::default());
+            log::info!("No config file found at {:?}, creating default config", config_path);
+            // Create the config file with real Supabase values
+            Self::create_default_if_missing()?;
         }
 
         let content = std::fs::read_to_string(&config_path)
@@ -117,31 +118,19 @@ impl AppConfig {
                 .map_err(|e| format!("Failed to create config directory: {}", e))?;
         }
 
-        // Write default config with comments
+        // Write default config with real Supabase values
         let default_config = r#"# CentroVision EHR Configuration
-# This file configures the connection to Supabase and optional local server
 
 [supabase]
-# Your Supabase project URL
-url = "https://your-project.supabase.co"
-# Your Supabase anon/public key
-anon_key = "your-anon-key"
+url = "https://onforxrehgvwzyubbaye.supabase.co"
+anon_key = "sb_publishable_NtN71TmE2M_nuh60B6YvjQ_8rje5HuB"
 
 # Optional: Local PostgreSQL server for offline operation
-# Uncomment and configure when you have a server in the clinic
 # [local_server]
-# host = "192.168.1.100"  # IP of the server in your clinic
+# host = "192.168.0.9"
 # port = 5432
 # database = "centrovision"
 # user = "centrovision_app"
-# password = "your-secure-password"
-# enabled = true
-
-# Optional: Local file storage (SMB share) for offline file access
-# Files are stored here when offline, then synced to Supabase Storage
-# [local_storage]
-# smb_path = "\\\\192.168.0.9\\CentroVisionStorage"
-# username = "centrovision_service"  # Optional if using Everyone access
 # password = "your-password"
 # enabled = true
 "#;
