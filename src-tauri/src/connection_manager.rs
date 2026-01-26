@@ -43,6 +43,8 @@ pub struct ConnectionStatus {
     pub local_server_ip: Option<String>,
     /// Description of current state
     pub description: String,
+    /// Last health check error (if any) - for diagnostics
+    pub last_error: Option<String>,
 }
 
 /// Manages connections to Supabase and local PostgreSQL
@@ -59,6 +61,8 @@ pub struct ConnectionManager {
     config: AppConfig,
     /// Supabase URL for health checks
     supabase_url: String,
+    /// Last health check error for diagnostics
+    last_error: RwLock<Option<String>>,
 }
 
 impl ConnectionManager {
@@ -95,6 +99,7 @@ impl ConnectionManager {
             postgres_pool,
             config,
             supabase_url,
+            last_error: RwLock::new(None),
         };
 
         // Skip initial blocking check - let background task handle it
@@ -128,20 +133,24 @@ impl ConnectionManager {
             ConnectionMode::Offline => "Sin conexión - usando caché local".to_string(),
         };
 
+        let last_error = self.last_error.read().await.clone();
+
         ConnectionStatus {
             mode: mode.to_string(),
             supabase_available,
             local_available,
             local_server_ip,
             description,
+            last_error,
         }
     }
 
     /// Check health of all connections and update status
     pub async fn check_connections(&self) {
-        // Check Supabase
-        let supabase_ok = self.check_supabase().await;
+        // Check Supabase - returns (reachable, error_reason)
+        let (supabase_ok, error) = self.check_supabase().await;
         self.supabase_available.store(supabase_ok, Ordering::SeqCst);
+        *self.last_error.write().await = error;
 
         // Check local PostgreSQL
         let local_ok = if let Some(ref pool) = self.postgres_pool {
@@ -171,14 +180,12 @@ impl ConnectionManager {
         }
     }
 
-    /// Check if Supabase is reachable
-    async fn check_supabase(&self) -> bool {
+    /// Check if Supabase is reachable. Returns (is_reachable, error_reason).
+    async fn check_supabase(&self) -> (bool, Option<String>) {
         if self.supabase_url.is_empty() {
-            log::warn!("[HealthCheck] Supabase URL is empty - cannot check");
-            return false;
+            return (false, Some("Supabase URL is empty".to_string()));
         }
 
-        // Try to reach Supabase health endpoint
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build();
@@ -186,14 +193,11 @@ impl ConnectionManager {
         let client = match client {
             Ok(c) => c,
             Err(e) => {
-                log::error!("[HealthCheck] Failed to create HTTP client: {}", e);
-                return false;
+                return (false, Some(format!("HTTP client error: {}", e)));
             }
         };
 
-        // Just check if we can reach the Supabase URL
         let health_url = format!("{}/rest/v1/", self.supabase_url);
-        log::info!("[HealthCheck] Checking Supabase at: {}", health_url);
 
         match client.get(&health_url)
             .header("apikey", &self.config.supabase.anon_key)
@@ -202,27 +206,25 @@ impl ConnectionManager {
         {
             Ok(response) => {
                 let status = response.status();
-                // Any response (even 400) means the server is reachable
                 let is_reachable = status.as_u16() < 500;
                 if is_reachable {
-                    log::info!("[HealthCheck] Supabase reachable (HTTP {})", status);
+                    (true, None)
                 } else {
-                    log::warn!("[HealthCheck] Supabase returned server error: HTTP {}", status);
+                    (false, Some(format!("Supabase HTTP {}", status)))
                 }
-                is_reachable
             }
             Err(e) => {
-                // Detailed error diagnosis
-                if e.is_timeout() {
-                    log::error!("[HealthCheck] TIMEOUT connecting to Supabase (>10s) - possible slow network or firewall");
+                let reason = if e.is_timeout() {
+                    "TIMEOUT (>10s) - red lenta o firewall".to_string()
                 } else if e.is_connect() {
-                    log::error!("[HealthCheck] CONNECTION REFUSED to Supabase - possible firewall or DNS issue");
+                    format!("CONNECTION REFUSED - firewall o DNS: {}", e)
                 } else if e.is_request() {
-                    log::error!("[HealthCheck] REQUEST ERROR to Supabase: {} - possible TLS/certificate issue", e);
+                    format!("REQUEST ERROR (TLS/certificado): {}", e)
                 } else {
-                    log::error!("[HealthCheck] UNKNOWN ERROR reaching Supabase: {}", e);
-                }
-                false
+                    format!("ERROR: {}", e)
+                };
+                log::error!("[HealthCheck] {}", reason);
+                (false, Some(reason))
             }
         }
     }

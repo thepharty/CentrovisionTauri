@@ -62,7 +62,7 @@ export const NetworkStatusProvider = ({ children }: { children: ReactNode }) => 
           const newMode = connStatus.mode as ConnectionMode;
           setConnectionMode(prev => {
             if (prev !== newMode) {
-              console.warn(`[NetworkStatus] Connection mode changed: ${prev} -> ${newMode} | supabase=${connStatus.supabase_available} local=${connStatus.local_available} ip=${connStatus.local_server_ip}`);
+              console.warn(`[NetworkStatus] Connection mode changed: ${prev} -> ${newMode} | supabase=${connStatus.supabase_available} local=${connStatus.local_available} ip=${connStatus.local_server_ip}${connStatus.last_error ? ` | ERROR: ${connStatus.last_error}` : ''}`);
             }
             return newMode;
           });

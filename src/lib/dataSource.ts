@@ -99,6 +99,7 @@ export interface ConnectionStatus {
   local_available: boolean;
   local_server_ip: string | null;
   description: string;
+  last_error: string | null;
 }
 
 // Sync pending status from PostgreSQL _sync_pending table (Phase 21)
@@ -178,6 +179,7 @@ export async function getConnectionStatus(): Promise<ConnectionStatus> {
       local_available: false,
       local_server_ip: null,
       description: navigator.onLine ? 'Conectado a la nube' : 'Sin conexión',
+      last_error: null,
     };
   }
   return invokeCommand<ConnectionStatus>('get_connection_status');
