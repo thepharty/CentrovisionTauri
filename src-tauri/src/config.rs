@@ -54,8 +54,8 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             supabase: SupabaseConfig {
-                url: String::new(),
-                anon_key: String::new(),
+                url: "https://onforxrehgvwzyubbaye.supabase.co".to_string(),
+                anon_key: "sb_publishable_NtN71TmE2M_nuh60B6YvjQ_8rje5HuB".to_string(),
             },
             local_server: None,
             local_storage: None,
@@ -68,20 +68,21 @@ impl AppConfig {
     /// Path: ~/.centrovision/config.toml
     pub fn load() -> Result<Self, String> {
         let config_path = Self::get_config_path()?;
+        log::info!("[Config] Resolved config path: {:?}", config_path);
 
         if !config_path.exists() {
-            log::info!("No config file found at {:?}, creating default config", config_path);
+            log::info!("[Config] No config file found at {:?}, creating default config", config_path);
             // Create the config file with real Supabase values
             Self::create_default_if_missing()?;
         }
 
         let content = std::fs::read_to_string(&config_path)
-            .map_err(|e| format!("Failed to read config file: {}", e))?;
+            .map_err(|e| format!("Failed to read config file at {:?}: {}", config_path, e))?;
 
         let config: AppConfig = toml::from_str(&content)
-            .map_err(|e| format!("Failed to parse config file: {}", e))?;
+            .map_err(|e| format!("Failed to parse config file at {:?}: {}", config_path, e))?;
 
-        log::info!("Loaded config from {:?}", config_path);
+        log::info!("[Config] Loaded config from {:?} (supabase_url={})", config_path, if config.supabase.url.is_empty() { "<EMPTY>" } else { &config.supabase.url });
         if config.local_server.is_some() {
             log::info!("Local server configured: {}:{}",
                 config.local_server.as_ref().unwrap().host,
