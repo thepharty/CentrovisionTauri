@@ -44,8 +44,7 @@
     "createUpdaterArtifacts": true,
     "windows": {
       "nsis": {
-        "oneClick": true,
-        "perMachine": false
+        "installMode": "currentUser"
       }
     }
   },
