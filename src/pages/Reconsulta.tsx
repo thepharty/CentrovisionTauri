@@ -30,6 +30,7 @@ import { cn } from '@/lib/utils';
 import { VoiceDictationFAB } from '@/components/VoiceDictationFAB';
 import { DictationField } from '@/hooks/useVoiceDictation';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { useAppSettings } from '@/hooks/useAppSettings';
 import { invoke } from '@tauri-apps/api/core';
 import { readFileAsDataUrl } from '@/lib/localStorageHelper';
 
@@ -171,6 +172,7 @@ export default function Reconsulta() {
   const { user } = useAuth();
   const { connectionMode } = useNetworkStatus();
   const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+  const { isVoiceDictationEnabled } = useAppSettings();
 
   // Ref y estado para medir altura del header dinámicamente
   const headerRef = React.useRef<HTMLElement | null>(null);
@@ -435,7 +437,7 @@ export default function Reconsulta() {
   }, [encounterId]);
 
   const { data: encounter, isLoading } = useQuery({
-    queryKey: ['encounter', encounterId, connectionMode],
+    queryKey: ['encounter', encounterId],
     queryFn: async () => {
       // En modo local, usar Tauri commands
       if (isLocalMode) {
@@ -4667,7 +4669,7 @@ export default function Reconsulta() {
       )}
 
       {/* Voice Dictation FAB */}
-      <VoiceDictationFAB
+      {isVoiceDictationEnabled && <VoiceDictationFAB
         availableFields={['diagnostico', 'planTratamiento', 'datosSubjetivos', 'lamparaOD', 'lamparaOS', 'antecedentesGenerales', 'antecedentesOftalmologicos']}
         onApplyDictation={(field: DictationField, content: string) => {
           switch (field) {
@@ -4694,7 +4696,7 @@ export default function Reconsulta() {
               break;
           }
         }}
-      />
+      />}
     </>
   );
 }

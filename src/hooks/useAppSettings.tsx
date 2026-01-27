@@ -21,6 +21,9 @@ interface AppSettings {
   crm_visibility?: {
     enabled_for_all: boolean;
   };
+  voice_dictation?: {
+    enabled: boolean;
+  };
   [key: string]: any;
 }
 
@@ -95,5 +98,6 @@ export function useAppSettings() {
     updateSetting: updateSetting.mutate,
     isUpdating: updateSetting.isPending,
     isCRMVisibleForAll: settings?.crm_visibility?.enabled_for_all ?? true,
+    isVoiceDictationEnabled: settings?.voice_dictation?.enabled ?? false,
   };
 }

@@ -27,6 +27,7 @@ import { cn } from '@/lib/utils';
 import { VoiceDictationFAB } from '@/components/VoiceDictationFAB';
 import { DictationField } from '@/hooks/useVoiceDictation';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { useAppSettings } from '@/hooks/useAppSettings';
 import { invoke } from '@tauri-apps/api/core';
 import { readFileAsDataUrl } from '@/lib/localStorageHelper';
 
@@ -131,6 +132,7 @@ export default function Consultation() {
   const { user } = useAuth();
   const { connectionMode } = useNetworkStatus();
   const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+  const { isVoiceDictationEnabled } = useAppSettings();
 
   // Estados para agudeza visual
   const [avSinCorreccionOD, setAvSinCorreccionOD] = React.useState('');
@@ -514,7 +516,7 @@ export default function Consultation() {
   };
 
   const { data: encounter, isLoading } = useQuery({
-    queryKey: ['encounter', encounterId, connectionMode],
+    queryKey: ['encounter', encounterId],
     queryFn: async () => {
       // En modo local, usar Tauri commands
       if (isLocalMode) {
@@ -2876,7 +2878,7 @@ export default function Consultation() {
       )}
 
       {/* Voice Dictation FAB */}
-      <VoiceDictationFAB
+      {isVoiceDictationEnabled && <VoiceDictationFAB
         availableFields={['diagnostico', 'planTratamiento', 'motivoConsulta', 'lamparaOD', 'lamparaOS', 'antecedentesGenerales', 'antecedentesOftalmologicos']}
         onApplyDictation={(field: DictationField, content: string) => {
           switch (field) {
@@ -2903,7 +2905,7 @@ export default function Consultation() {
               break;
           }
         }}
-      />
+      />}
     </div>
   );
 }

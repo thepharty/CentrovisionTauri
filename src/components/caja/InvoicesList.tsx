@@ -254,7 +254,7 @@ export default function InvoicesList() {
     }
   };
 
-  const canDelete = hasRole('admin') || hasRole('contabilidad');
+  const canDelete = hasRole('admin') || hasRole('contabilidad') || hasRole('caja');
 
   return (
     <div className="space-y-4">

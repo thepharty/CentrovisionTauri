@@ -199,7 +199,7 @@ export default function Surgery() {
   const { generatePDF, isGenerating, htmlContent, clearContent } = usePrintPDF();
 
   const { data: encounter, isLoading } = useQuery({
-    queryKey: ['encounter', encounterId, connectionMode],
+    queryKey: ['encounter', encounterId],
     queryFn: async () => {
       // En modo local, usar Tauri commands
       if (isLocalMode) {

@@ -48,6 +48,7 @@ export default function InventoryItemForm({ item, onClose }: InventoryItemFormPr
   const { connectionMode } = useNetworkStatus();
   const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [deleteWarnings, setDeleteWarnings] = useState<string[]>([]);
   const [showSupplierDialog, setShowSupplierDialog] = useState(false);
   const [newSupplierName, setNewSupplierName] = useState('');
   const [formData, setFormData] = useState({
@@ -163,54 +164,53 @@ export default function InventoryItemForm({ item, onClose }: InventoryItemFormPr
     },
   });
 
+  // Verificar advertencias al abrir el diálogo de eliminación
+  const handleDeleteClick = async () => {
+    if (!item) return;
+    const warnings: string[] = [];
+
+    try {
+      if (isLocalMode) {
+        const movements = await invoke<any[]>('get_inventory_movements', { branchId: currentBranch?.id || '', limit: 1 }).catch(() => []);
+        if (movements.some(m => m.item_id === item.id)) {
+          warnings.push('Este producto tiene movimientos de inventario registrados.');
+        }
+      } else {
+        const { data: movements } = await supabase
+          .from('inventory_movements')
+          .select('id')
+          .eq('item_id', item.id)
+          .limit(1);
+
+        if (movements && movements.length > 0) {
+          warnings.push('Este producto tiene movimientos de inventario registrados.');
+        }
+
+        const { data: invoiceItems } = await supabase
+          .from('invoice_items')
+          .select('id')
+          .eq('item_id', item.id)
+          .limit(1);
+
+        if (invoiceItems && invoiceItems.length > 0) {
+          warnings.push('Este producto está incluido en facturas.');
+        }
+      }
+    } catch {
+      // Si falla la verificación, igual permitir continuar
+    }
+
+    setDeleteWarnings(warnings);
+    setShowDeleteDialog(true);
+  };
+
   const deleteMutation = useMutation({
     mutationFn: async () => {
       if (!item) return;
 
       if (isLocalMode) {
-        // En modo local, verificar movimientos con get_inventory_movements
-        const movements = await invoke<any[]>('get_inventory_movements', { branchId: currentBranch?.id || '', limit: 1 });
-        const hasMovements = movements.some(m => m.item_id === item.id);
-        if (hasMovements) {
-          throw new Error('No se puede eliminar: el producto tiene movimientos de inventario registrados');
-        }
-
-        // Verificar invoice_items - usamos get_invoice_items filtrando client-side
-        const invoiceItems = await invoke<any[]>('get_invoice_items', { invoiceId: '' }).catch(() => []);
-        const hasInvoiceItems = invoiceItems.some(ii => ii.item_id === item.id);
-        if (hasInvoiceItems) {
-          throw new Error('No se puede eliminar: el producto está incluido en facturas');
-        }
-
-        // Soft delete
         await invoke('update_inventory_item', { id: item.id, updates: { active: false } });
         return;
-      }
-
-      // Verificar si el producto tiene movimientos de inventario
-      const { data: movements, error: movError } = await supabase
-        .from('inventory_movements')
-        .select('id')
-        .eq('item_id', item.id)
-        .limit(1);
-
-      if (movError) throw movError;
-
-      if (movements && movements.length > 0) {
-        throw new Error('No se puede eliminar: el producto tiene movimientos de inventario registrados');
-      }
-
-      // Verificar si el producto está en facturas
-      const { data: invoiceItems, error: invError } = await supabase
-        .from('invoice_items')
-        .select('id')
-        .eq('item_id', item.id)
-        .limit(1);
-
-      if (invError) throw invError;
-
-      if (invoiceItems && invoiceItems.length > 0) {
-        throw new Error('No se puede eliminar: el producto está incluido en facturas');
       }
 
       // Soft delete: marcar como inactivo
@@ -248,7 +248,7 @@ export default function InventoryItemForm({ item, onClose }: InventoryItemFormPr
               <Button
                 variant="destructive"
                 size="sm"
-                onClick={() => setShowDeleteDialog(true)}
+                onClick={handleDeleteClick}
               >
                 <Trash2 className="h-4 w-4 mr-2" />
                 Eliminar
@@ -460,9 +460,14 @@ export default function InventoryItemForm({ item, onClose }: InventoryItemFormPr
               </p>
               {item?.current_stock > 0 && (
                 <p className="text-orange-600 font-medium">
-                  ⚠️ Advertencia: El producto tiene stock actual de {item.current_stock}
+                  Advertencia: El producto tiene stock actual de {item.current_stock}
                 </p>
               )}
+              {deleteWarnings.map((warning, i) => (
+                <p key={i} className="text-orange-600 font-medium">
+                  Advertencia: {warning}
+                </p>
+              ))}
               <p className="text-sm">
                 No podrás usarlo en nuevas facturas, pero se mantendrá el historial existente.
               </p>

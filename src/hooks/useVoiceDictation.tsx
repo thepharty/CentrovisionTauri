@@ -297,6 +297,11 @@ export function useVoiceDictation(options: UseVoiceDictationOptions = {}): UseVo
     };
 
     recognition.onerror = (event) => {
+      // Stop auto-restart on fatal errors to prevent infinite loop
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        shouldRestartRef.current = false;
+      }
+
       const errorMessage = event.error === 'not-allowed'
         ? 'Permiso de micrófono denegado'
         : event.error === 'no-speech'

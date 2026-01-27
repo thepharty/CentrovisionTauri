@@ -111,7 +111,7 @@ export default function Admin() {
   const [isAddingRole, setIsAddingRole] = useState(false);
   
   // App settings
-  const { isCRMVisibleForAll, updateSetting, isUpdating } = useAppSettings();
+  const { isCRMVisibleForAll, isVoiceDictationEnabled, updateSetting, isUpdating } = useAppSettings();
 
   // Verificar que el usuario es admin
   const isAdmin = roles.includes('admin');
@@ -763,6 +763,25 @@ export default function Admin() {
                       updateSetting({ 
                         key: 'crm_visibility', 
                         value: { enabled_for_all: checked } 
+                      })
+                    }
+                    disabled={isUpdating}
+                  />
+                </div>
+                {/* Voice Dictation Toggle */}
+                <div className="flex items-center justify-between p-4 border rounded-lg">
+                  <div className="space-y-0.5">
+                    <Label className="text-base font-medium">Dictado por voz</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Habilita el botón flotante de dictado por voz en las páginas de consulta y reconsulta
+                    </p>
+                  </div>
+                  <Switch
+                    checked={isVoiceDictationEnabled}
+                    onCheckedChange={(checked) =>
+                      updateSetting({
+                        key: 'voice_dictation',
+                        value: { enabled: checked }
                       })
                     }
                     disabled={isUpdating}

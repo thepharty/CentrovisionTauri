@@ -106,6 +106,9 @@ function generatePrescriptionHTML(data: PrintPDFData): string {
   <meta charset="UTF-8">
   <title>Receta Oftalmológica</title>
   <style>
+    * {
+      box-sizing: border-box;
+    }
     @page {
       size: letter;
       margin: 0;
@@ -546,9 +549,8 @@ function generateTreatmentHTML(data: PrintPDFData): string {
       line-height: 1.2;
       color: #1a1a1a;
       margin: 0;
-      padding: 3px 20px 15px 20px;
+      padding: 15px 30px;
       position: relative;
-      min-height: 100vh;
     }
     .header {
       text-align: center;
@@ -631,7 +633,7 @@ function generateTreatmentHTML(data: PrintPDFData): string {
       }
       html, body {
         background: #ffffff !important;
-        padding: 3px 20px 15px 20px;
+        padding: 15px 30px;
         margin: 0;
       }
       * {
