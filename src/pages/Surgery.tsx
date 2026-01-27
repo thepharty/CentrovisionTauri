@@ -586,30 +586,33 @@ export default function Surgery() {
   });
 
   // Query para obtener la firma del consentimiento
-  // Primero busca por surgery_id, si no encuentra busca por patient_id + fecha
+  // Busca por surgery_id si existe, si no busca por patient_id + fecha del encounter
   const { data: consentSignature } = useQuery({
-    queryKey: ['consent-signature', surgery?.id, encounter?.patient_id, connectionMode],
+    queryKey: ['consent-signature', surgery?.id, encounter?.patient_id, encounter?.created_at, connectionMode],
     queryFn: async () => {
-      if (!surgery?.id) return null;
+      const patientId = encounter?.patient_id;
+      const encounterCreatedAt = encounter?.created_at;
 
-      // En modo local, usar Tauri command
+      // En modo local, usar Tauri commands
       if (isLocalMode) {
-        console.log('[Surgery] Getting consent signature from PostgreSQL local');
-        const signature = await invoke<ConsentSignatureLocal | null>('get_consent_signature_by_surgery', {
-          surgeryId: surgery.id,
-        });
-        if (signature) return signature;
+        // Primero intentar por surgery_id si existe
+        if (surgery?.id) {
+          const signature = await invoke<ConsentSignatureLocal | null>('get_consent_signature_by_surgery', {
+            surgeryId: surgery.id,
+          });
+          if (signature) return signature;
+        }
 
-        // Fallback: buscar por patient_id + fecha del encounter
-        if (encounter?.patient_id && encounter?.created_at) {
-          const encounterDate = new Date(encounter.created_at);
+        // Buscar por patient_id + fecha del encounter
+        if (patientId && encounterCreatedAt) {
+          const encounterDate = new Date(encounterCreatedAt);
           const startOfDay = new Date(encounterDate);
           startOfDay.setHours(0, 0, 0, 0);
           const endOfDay = new Date(encounterDate);
           endOfDay.setHours(23, 59, 59, 999);
 
           const signatures = await invoke<ConsentSignatureLocal[]>('get_consent_signatures_by_patient', {
-            patientId: encounter.patient_id,
+            patientId,
           }).catch(() => [] as ConsentSignatureLocal[]);
 
           const todaySignature = signatures.find(s => {
@@ -621,27 +624,29 @@ export default function Surgery() {
         return null;
       }
 
-      // Modo Supabase - buscar por surgery_id
-      const { data, error } = await (supabase as any)
-        .from('consent_signatures')
-        .select('*')
-        .eq('surgery_id', surgery.id)
-        .maybeSingle();
+      // Modo Supabase - primero intentar por surgery_id si existe
+      if (surgery?.id) {
+        const { data, error } = await (supabase as any)
+          .from('consent_signatures')
+          .select('*')
+          .eq('surgery_id', surgery.id)
+          .maybeSingle();
 
-      if (error) throw error;
-      if (data) return data as {
-        id: string;
-        patient_name: string;
-        witness_name: string;
-        patient_signature: string;
-        witness_signature: string;
-        consent_text: string;
-        signed_at: string;
-      };
+        if (error) throw error;
+        if (data) return data as {
+          id: string;
+          patient_name: string;
+          witness_name: string;
+          patient_signature: string;
+          witness_signature: string;
+          consent_text: string;
+          signed_at: string;
+        };
+      }
 
-      // Fallback: buscar por patient_id + fecha del encounter
-      if (encounter?.patient_id && encounter?.created_at) {
-        const encounterDate = new Date(encounter.created_at);
+      // Buscar por patient_id + fecha del encounter
+      if (patientId && encounterCreatedAt) {
+        const encounterDate = new Date(encounterCreatedAt);
         const startOfDay = new Date(encounterDate);
         startOfDay.setHours(0, 0, 0, 0);
         const endOfDay = new Date(encounterDate);
@@ -650,7 +655,7 @@ export default function Surgery() {
         const { data: fallbackData, error: fallbackError } = await (supabase as any)
           .from('consent_signatures')
           .select('*')
-          .eq('patient_id', encounter.patient_id)
+          .eq('patient_id', patientId)
           .gte('signed_at', startOfDay.toISOString())
           .lte('signed_at', endOfDay.toISOString())
           .order('signed_at', { ascending: false })
@@ -674,7 +679,7 @@ export default function Surgery() {
 
       return null;
     },
-    enabled: !!surgery?.id,
+    enabled: !!encounter?.patient_id,
   });
 
   // Cargar datos de la cirugía cuando estén disponibles
