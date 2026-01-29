@@ -37,8 +37,15 @@ export const DraggablePipelineCard = ({ pipeline, onClick }: DraggablePipelineCa
     transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
   } : undefined;
 
+  // Días totales desde que se creó el pipeline
+  const totalDays = Math.floor(
+    (new Date().getTime() - new Date(pipeline.created_at).getTime()) / (1000 * 60 * 60 * 24)
+  );
+
+  // Días en la etapa actual
+  const stageDate = pipeline.stage_changed_at || pipeline.updated_at;
   const daysInStage = Math.floor(
-    (new Date().getTime() - new Date(pipeline.updated_at).getTime()) / (1000 * 60 * 60 * 24)
+    (new Date().getTime() - new Date(stageDate).getTime()) / (1000 * 60 * 60 * 24)
   );
 
   const isOverdue = daysInStage > 7;
@@ -98,10 +105,15 @@ export const DraggablePipelineCard = ({ pipeline, onClick }: DraggablePipelineCa
 
           {/* Meta Info */}
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            <span className="flex items-center gap-1">
+            <span className="flex items-center gap-1" title="Días en etapa actual">
               <Clock className="h-3 w-3" />
               {daysInStage}d
             </span>
+            {totalDays !== daysInStage && (
+              <span className="text-muted-foreground/60" title="Días totales">
+                ({totalDays}d total)
+              </span>
+            )}
             {pipeline.patient?.phone && (
               <span className="flex items-center gap-1 truncate">
                 <Phone className="h-3 w-3" />

@@ -20,6 +20,7 @@ export interface CRMPipeline {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  stage_changed_at: string | null;
   patient?: {
     id: string;
     first_name: string;
@@ -105,6 +106,7 @@ export const useCRMPipelines = (branchId?: string, status?: string) => {
           created_by: p.created_by,
           created_at: p.created_at,
           updated_at: p.updated_at,
+          stage_changed_at: (p as any).stage_changed_at || p.updated_at,
           patient: p.patient_first_name ? {
             id: p.patient_id,
             first_name: p.patient_first_name,
@@ -333,7 +335,10 @@ export const useUpdatePipelineStage = () => {
       // RLS puede bloquear silenciosamente sin devolver error
       const { data: updatedPipeline, error: pipelineError } = await supabase
         .from('crm_pipelines')
-        .update({ current_stage: newStage })
+        .update({
+          current_stage: newStage,
+          stage_changed_at: new Date().toISOString()
+        })
         .eq('id', pipelineId)
         .select('id, current_stage')
         .single();
