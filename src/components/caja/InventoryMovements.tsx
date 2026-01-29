@@ -232,6 +232,11 @@ export default function InventoryMovements() {
       if (!selectedProduct) throw new Error('Seleccione un producto');
       if (!quantity || Number(quantity) === 0) throw new Error('Ingrese una cantidad válida');
 
+      // Validar stock para salidas
+      if (movementType === 'salida' && Number(quantity) > (selectedProduct.current_stock || 0)) {
+        throw new Error(`Stock insuficiente. Disponible: ${selectedProduct.current_stock || 0}`);
+      }
+
       if (selectedProduct.requires_lot && movementType !== 'ajuste' && !selectedLot) {
         throw new Error('Este producto requiere seleccionar un lote');
       }

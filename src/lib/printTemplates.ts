@@ -127,9 +127,10 @@ function generatePrescriptionHTML(data: PrintPDFData): string {
     }
     .header img {
       width: 100%;
-      max-width: 100%;
+      max-width: 800px;
       height: auto;
       display: block;
+      margin: 0 auto;
     }
     .info-section {
       display: flex;

@@ -163,6 +163,9 @@ export default function InvoicesList() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['caja-summary'] });
+      // Invalidar inventario para reflejar el stock restaurado
+      queryClient.invalidateQueries({ queryKey: ['inventory-items'] });
+      queryClient.invalidateQueries({ queryKey: ['inventory-movements'] });
       toast.success('Factura eliminada exitosamente');
       setDeleteDialogOpen(false);
       setInvoiceToDelete(null);

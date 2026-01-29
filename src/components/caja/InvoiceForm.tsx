@@ -358,6 +358,11 @@ export default function InvoiceForm({ initialAppointmentId, initialPatientId }: 
     const product = inventoryItems?.find((p) => p.id === productId);
     if (!product) return;
 
+    if (product.current_stock <= 0) {
+      toast.error(`Sin stock disponible para ${product.name}`);
+      return;
+    }
+
     setItems([
       ...items,
       {
@@ -400,6 +405,15 @@ export default function InvoiceForm({ initialAppointmentId, initialPatientId }: 
   };
 
   const updateItemQuantity = (index: number, quantity: number) => {
+    const item = items[index];
+    // Validar stock solo para productos de inventario
+    if (item.item_type === 'producto' && item.item_id) {
+      const product = inventoryItems?.find((p) => p.id === item.item_id);
+      if (product && quantity > product.current_stock) {
+        toast.error(`Stock insuficiente. Disponible: ${product.current_stock}`);
+        return;
+      }
+    }
     const newItems = [...items];
     newItems[index].quantity = quantity;
     newItems[index].subtotal = quantity * newItems[index].unit_price;
