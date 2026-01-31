@@ -157,7 +157,7 @@ export function ProductsReport() {
       ...filteredProducts.map(p => [
         p.invoice_number,
         p.patient_name,
-        format(new Date(p.created_at), "dd/MM/yyyy"),
+        format(new Date(p.created_at), "dd/MM/yyyy HH:mm"),
         p.product_name,
         p.category,
         p.supplier_name,
@@ -173,7 +173,7 @@ export function ProductsReport() {
 
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet(exportData);
-    ws['!cols'] = [{ wch: 12 }, { wch: 25 }, { wch: 12 }, { wch: 30 }, { wch: 15 }, { wch: 20 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }];
+    ws['!cols'] = [{ wch: 12 }, { wch: 25 }, { wch: 16 }, { wch: 30 }, { wch: 15 }, { wch: 20 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }];
     XLSX.utils.book_append_sheet(wb, ws, "Productos");
     XLSX.writeFile(wb, `Reporte_Productos_${format(clinicNow(), "yyyy-MM-dd")}.xlsx`);
     toast.success("Reporte exportado exitosamente");
@@ -190,7 +190,7 @@ export function ProductsReport() {
     const tableData = filteredProducts.map(p => [
       p.invoice_number,
       p.patient_name,
-      format(new Date(p.created_at), "dd/MM/yyyy"),
+      format(new Date(p.created_at), "dd/MM/yyyy HH:mm"),
       p.product_name,
       p.category,
       p.supplier_name,
@@ -337,7 +337,7 @@ export function ProductsReport() {
                   <TableRow key={idx}>
                     <TableCell className="font-medium">{p.invoice_number}</TableCell>
                     <TableCell>{p.patient_name}</TableCell>
-                    <TableCell>{format(new Date(p.created_at), "dd/MM/yyyy")}</TableCell>
+                    <TableCell>{format(new Date(p.created_at), "dd/MM/yyyy HH:mm")}</TableCell>
                     <TableCell>{p.product_name}</TableCell>
                     <TableCell>{p.category}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{p.supplier_name}</TableCell>

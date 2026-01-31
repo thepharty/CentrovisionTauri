@@ -393,9 +393,17 @@ export default function InventoryItemForm({ item, onClose }: InventoryItemFormPr
                   placeholder="0.00"
                   disabled={!!item}
                 />
-                {item && (
+                {item ? (
                   <p className="text-xs text-muted-foreground mt-1">
                     Use movimientos de inventario para ajustar stock
+                  </p>
+                ) : formData.current_stock > 0 ? (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1 font-medium">
+                    Este stock ya queda registrado. NO cree un movimiento de entrada adicional.
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Stock inicial del producto
                   </p>
                 )}
               </div>

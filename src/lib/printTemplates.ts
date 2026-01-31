@@ -15,6 +15,7 @@ export interface PrintPDFData {
   };
   date: string;
   content: any;
+  headerImageUrl?: string; // URL del encabezado personalizado de la sede
 }
 
 // Cash Closure Data Interface
@@ -68,7 +69,8 @@ export function generatePrintHTML(data: PrintPDFData): string {
 }
 
 function generatePrescriptionHTML(data: PrintPDFData): string {
-  const { patientData, doctorData, date, content } = data;
+  const { patientData, doctorData, date, content, headerImageUrl } = data;
+  const headerSrc = headerImageUrl || HEADER_IMAGE_PATH;
   const { od, os, material, color, type, dp } = content;
 
   const formatValue = (val: any) => {
@@ -119,7 +121,7 @@ function generatePrescriptionHTML(data: PrintPDFData): string {
       line-height: 1.2;
       color: #1a1a1a;
       margin: 0;
-      padding: 15px 30px;
+      padding: 15px 30px 15px 40px;
     }
     .header {
       text-align: center;
@@ -373,7 +375,7 @@ function generatePrescriptionHTML(data: PrintPDFData): string {
         margin: 0;
       }
       body {
-        padding: 15px 30px;
+        padding: 15px 30px 15px 40px;
         margin: 0;
       }
       * {
@@ -386,7 +388,7 @@ function generatePrescriptionHTML(data: PrintPDFData): string {
 </head>
 <body>
   <div class="header">
-    <img src="${HEADER_IMAGE_PATH}" alt="Centro Visión" />
+    <img src="${headerSrc}" alt="Centro Visión" />
   </div>
 
   <div class="info-section">
@@ -527,7 +529,8 @@ function generatePrescriptionHTML(data: PrintPDFData): string {
 }
 
 function generateTreatmentHTML(data: PrintPDFData): string {
-  const { patientData, doctorData, date, content } = data;
+  const { patientData, doctorData, date, content, headerImageUrl } = data;
+  const headerSrc = headerImageUrl || HEADER_IMAGE_PATH;
   const { diagnosis, treatment } = content;
 
   return `
@@ -647,7 +650,7 @@ function generateTreatmentHTML(data: PrintPDFData): string {
 </head>
 <body>
   <div class="header">
-    <img src="${HEADER_IMAGE_PATH}" alt="Centro Visión">
+    <img src="${headerSrc}" alt="Centro Visión">
   </div>
 
   <div class="info-section">
@@ -693,7 +696,8 @@ function generateTreatmentHTML(data: PrintPDFData): string {
 }
 
 function generateSurgeriesHTML(data: PrintPDFData): string {
-  const { patientData, doctorData, date, content } = data;
+  const { patientData, doctorData, date, content, headerImageUrl } = data;
+  const headerSrc = headerImageUrl || HEADER_IMAGE_PATH;
   const { surgeries } = content;
 
   const eyeMap: { [key: string]: string } = {
@@ -863,7 +867,7 @@ function generateSurgeriesHTML(data: PrintPDFData): string {
 </head>
 <body>
   <div class="header">
-    <img src="${HEADER_IMAGE_PATH}" alt="Centro Visión">
+    <img src="${headerSrc}" alt="Centro Visión">
   </div>
 
   <div class="info-section">
@@ -925,7 +929,8 @@ function generateSurgeriesHTML(data: PrintPDFData): string {
 }
 
 function generateStudiesHTML(data: PrintPDFData): string {
-  const { patientData, doctorData, date, content } = data;
+  const { patientData, doctorData, date, content, headerImageUrl } = data;
+  const headerSrc = headerImageUrl || HEADER_IMAGE_PATH;
   const { studies } = content;
 
   const eyeMap: { [key: string]: string } = {
@@ -1101,7 +1106,7 @@ function generateStudiesHTML(data: PrintPDFData): string {
 </head>
 <body>
   <div class="header">
-    <img src="${HEADER_IMAGE_PATH}" alt="Centro Visión">
+    <img src="${headerSrc}" alt="Centro Visión">
   </div>
 
   <div class="info-section">

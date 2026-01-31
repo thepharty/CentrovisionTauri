@@ -49,7 +49,7 @@ function DroppableSlot({ id, children, onDoubleClick }: DroppableSlotProps) {
   return (
     <div
       ref={setNodeRef}
-      className={`relative border-r h-full p-1 transition-colors cursor-pointer overflow-visible flex-1 ${
+      className={`relative border-r h-full p-1 transition-colors cursor-pointer overflow-hidden flex-1 ${
         isOver ? 'bg-primary/20' : 'hover:bg-accent/5'
       }`}
       onDoubleClick={onDoubleClick}
@@ -933,9 +933,9 @@ export function Timetable({ currentDate, view, selectedDoctorIds = [], onAppoint
                         const count = slotAppointments.length;
 
                         return (
-                          <div className={count === 2 ? 'flex flex-row gap-0.5 w-full' : ''}>
+                          <div className={count === 2 ? 'flex flex-row gap-0.5 w-full overflow-hidden' : 'overflow-hidden'}>
                             {slotAppointments.map((apt) => (
-                              <div key={apt.id} style={{ width: count === 2 ? '50%' : '100%' }}>
+                              <div key={apt.id} className="overflow-hidden min-w-0" style={{ width: count === 2 ? '50%' : '100%' }}>
                                 <DraggableAppointmentBlock
                                   appointment={apt}
                                   compact={count === 2}

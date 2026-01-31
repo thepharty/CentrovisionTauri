@@ -31,6 +31,7 @@ import { VoiceDictationFAB } from '@/components/VoiceDictationFAB';
 import { DictationField } from '@/hooks/useVoiceDictation';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import { useAppSettings } from '@/hooks/useAppSettings';
+import { useBranch } from '@/hooks/useBranch';
 import { invoke } from '@tauri-apps/api/core';
 import { readFileAsDataUrl } from '@/lib/localStorageHelper';
 
@@ -173,6 +174,7 @@ export default function Reconsulta() {
   const { connectionMode } = useNetworkStatus();
   const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const { isVoiceDictationEnabled } = useAppSettings();
+  const { currentBranch } = useBranch();
 
   // Ref y estado para medir altura del header dinámicamente
   const headerRef = React.useRef<HTMLElement | null>(null);
@@ -1294,6 +1296,7 @@ export default function Reconsulta() {
           dp: dp,
           notes: notaRefraccion,
         },
+        headerImageUrl: currentBranch?.pdf_header_url || undefined,
       };
 
       setPreviewTitle('Preview de Receta');
@@ -1333,6 +1336,7 @@ export default function Reconsulta() {
         content: {
           treatment: planTratamiento,
         },
+        headerImageUrl: currentBranch?.pdf_header_url || undefined,
       };
 
       setPreviewTitle('Preview de Plan de Tratamiento');
@@ -1399,6 +1403,7 @@ export default function Reconsulta() {
         content: {
           surgeries: surgeriesArray,
         },
+        headerImageUrl: currentBranch?.pdf_header_url || undefined,
       };
 
       setPreviewTitle('Preview de Orden de Cirugía');
@@ -1465,6 +1470,7 @@ export default function Reconsulta() {
         content: {
           studies: studiesArray,
         },
+        headerImageUrl: currentBranch?.pdf_header_url || undefined,
       };
 
       setPreviewTitle('Preview de Orden de Estudios');

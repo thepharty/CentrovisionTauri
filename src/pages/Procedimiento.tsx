@@ -21,6 +21,7 @@ import React from 'react';
 import { usePrintPDF } from '@/hooks/usePrintPDF';
 import { PrintPreviewDialog } from '@/components/dashboard/PrintPreviewDialog';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { useBranch } from '@/hooks/useBranch';
 import { invoke } from '@tauri-apps/api/core';
 
 // Check if running in Tauri
@@ -110,6 +111,7 @@ export default function Surgery() {
   const queryClient = useQueryClient();
   const { connectionMode } = useNetworkStatus();
   const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+  const { currentBranch } = useBranch();
 
   // Estados principales - simplificados según estructura de DB
   const [tipoProcedimiento, setTipoProcedimiento] = React.useState('');
@@ -904,6 +906,7 @@ export default function Surgery() {
         content: {
           treatment: medicacion,
         },
+        headerImageUrl: currentBranch?.pdf_header_url || undefined,
       };
 
       setPreviewTitle('Preview de Medicación Post-Procedimiento');

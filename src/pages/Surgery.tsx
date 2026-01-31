@@ -26,6 +26,7 @@ import { PrintPreviewDialog } from '@/components/dashboard/PrintPreviewDialog';
 import { compressImages } from '@/lib/imageCompression';
 import jsPDF from 'jspdf';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { useBranch } from '@/hooks/useBranch';
 import { invoke } from '@tauri-apps/api/core';
 import { readFileAsDataUrl, uploadFileToLocal } from '@/lib/localStorageHelper';
 
@@ -150,6 +151,7 @@ export default function Surgery() {
   const queryClient = useQueryClient();
   const { connectionMode } = useNetworkStatus();
   const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
+  const { currentBranch } = useBranch();
 
   // Estados principales - simplificados según estructura de DB
   const [tipoCirugia, setTipoCirugia] = React.useState('');
@@ -974,6 +976,7 @@ export default function Surgery() {
         content: {
           treatment: medicacion,  // El campo de medicación
         },
+        headerImageUrl: currentBranch?.pdf_header_url || undefined,
       };
 
       setPreviewTitle('Preview de Medicación Post-Quirúrgica');

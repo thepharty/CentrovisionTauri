@@ -28,6 +28,7 @@ import { VoiceDictationFAB } from '@/components/VoiceDictationFAB';
 import { DictationField } from '@/hooks/useVoiceDictation';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import { useAppSettings } from '@/hooks/useAppSettings';
+import { useBranch } from '@/hooks/useBranch';
 import { invoke } from '@tauri-apps/api/core';
 import { readFileAsDataUrl } from '@/lib/localStorageHelper';
 
@@ -133,6 +134,7 @@ export default function Consultation() {
   const { connectionMode } = useNetworkStatus();
   const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const { isVoiceDictationEnabled } = useAppSettings();
+  const { currentBranch } = useBranch();
 
   // Estados para agudeza visual
   const [avSinCorreccionOD, setAvSinCorreccionOD] = React.useState('');
@@ -335,6 +337,7 @@ export default function Consultation() {
           dp: dp,
           notes: notaRefraccion,
         },
+        headerImageUrl: currentBranch?.pdf_header_url || undefined,
       };
 
       setPreviewTitle('Preview de Receta');
@@ -374,6 +377,7 @@ export default function Consultation() {
         content: {
           treatment: planTratamiento,
         },
+        headerImageUrl: currentBranch?.pdf_header_url || undefined,
       };
 
       setPreviewTitle('Preview de Plan de Tratamiento');
@@ -440,6 +444,7 @@ export default function Consultation() {
         content: {
           surgeries: surgeriesArray,
         },
+        headerImageUrl: currentBranch?.pdf_header_url || undefined,
       };
 
       setPreviewTitle('Preview de Orden de Cirugía');
@@ -506,6 +511,7 @@ export default function Consultation() {
         content: {
           studies: studiesArray,
         },
+        headerImageUrl: currentBranch?.pdf_header_url || undefined,
       };
 
       setPreviewTitle('Preview de Orden de Estudios');

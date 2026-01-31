@@ -415,6 +415,11 @@ export default function InventoryMovements() {
                           <SelectItem value="ajuste">Ajuste</SelectItem>
                         </SelectContent>
                       </Select>
+                      {movementType === 'entrada' && (
+                        <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                          Si acaba de crear este producto con stock inicial, NO necesita registrar entrada.
+                        </p>
+                      )}
                     </div>
 
                     <div>

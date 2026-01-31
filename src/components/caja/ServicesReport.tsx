@@ -141,7 +141,7 @@ export function ServicesReport() {
       ...filteredServices.map(s => [
         s.invoice_number,
         s.patient_name,
-        format(new Date(s.created_at), "dd/MM/yyyy"),
+        format(new Date(s.created_at), "dd/MM/yyyy HH:mm"),
         s.service_name,
         getServiceTypeLabel(s.service_type),
         s.quantity,
@@ -155,7 +155,7 @@ export function ServicesReport() {
 
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet(exportData);
-    ws['!cols'] = [{ wch: 12 }, { wch: 25 }, { wch: 12 }, { wch: 35 }, { wch: 15 }, { wch: 10 }, { wch: 15 }, { wch: 12 }, { wch: 30 }];
+    ws['!cols'] = [{ wch: 12 }, { wch: 25 }, { wch: 16 }, { wch: 35 }, { wch: 15 }, { wch: 10 }, { wch: 15 }, { wch: 12 }, { wch: 30 }];
     XLSX.utils.book_append_sheet(wb, ws, "Servicios");
 
     // Hoja 2: Resumen por tipo
@@ -199,7 +199,7 @@ export function ServicesReport() {
     const tableData = filteredServices.map(s => [
       s.invoice_number,
       s.patient_name,
-      format(new Date(s.created_at), "dd/MM/yyyy"),
+      format(new Date(s.created_at), "dd/MM/yyyy HH:mm"),
       s.service_name,
       getServiceTypeLabel(s.service_type),
       s.quantity.toString(),
@@ -341,7 +341,7 @@ export function ServicesReport() {
                   <TableRow key={idx}>
                     <TableCell className="font-medium">{s.invoice_number}</TableCell>
                     <TableCell>{s.patient_name}</TableCell>
-                    <TableCell>{format(new Date(s.created_at), "dd/MM/yyyy")}</TableCell>
+                    <TableCell>{format(new Date(s.created_at), "dd/MM/yyyy HH:mm")}</TableCell>
                     <TableCell>{s.service_name}</TableCell>
                     <TableCell>{getServiceTypeLabel(s.service_type)}</TableCell>
                     <TableCell className="text-right">{s.quantity}</TableCell>
