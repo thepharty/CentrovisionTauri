@@ -127,7 +127,8 @@ export function ProductsReport() {
       const { data, error } = await supabase
         .from('inventory_items')
         .select('category')
-        .eq('active', true);
+        .eq('active', true)
+        .limit(5000);
 
       if (error) throw error;
       const uniqueCategories = [...new Set(data.map(item => item.category))];

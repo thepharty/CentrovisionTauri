@@ -115,7 +115,8 @@ export default function InventoryList({ showSecretButton = false }: InventoryLis
         .select('*, suppliers(name)')
         .eq('active', true)
         .eq('branch_id', currentBranch.id)
-        .order('name');
+        .order('name')
+        .limit(5000);
 
       if (categoryFilter !== 'all') {
         query = query.eq('category', categoryFilter);

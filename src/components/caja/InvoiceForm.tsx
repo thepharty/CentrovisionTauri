@@ -209,7 +209,9 @@ export default function InvoiceForm({ initialAppointmentId, initialPatientId }: 
         .from('inventory_items')
         .select('*')
         .eq('active', true)
-        .eq('branch_id', currentBranch.id);
+        .eq('branch_id', currentBranch.id)
+        .order('name')
+        .limit(5000);
       return data || [];
     },
     enabled: !!currentBranch?.id,

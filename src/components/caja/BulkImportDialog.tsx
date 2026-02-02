@@ -117,7 +117,8 @@ export default function BulkImportDialog({ open, onOpenChange }: BulkImportDialo
         .from('inventory_items')
         .select('code')
         .eq('branch_id', currentBranch.id)
-        .not('code', 'is', null);
+        .not('code', 'is', null)
+        .limit(5000);
       return data?.map(item => item.code?.toLowerCase().trim()).filter(Boolean) as string[] || [];
     },
     enabled: !!currentBranch,

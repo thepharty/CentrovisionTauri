@@ -183,7 +183,8 @@ export function StockPanel({ onClose, onSelectItem }: StockPanelProps) {
         .eq('category', 'gota')
         .eq('active', true)
         .gt('current_stock', 0)
-        .order('name');
+        .order('name')
+        .limit(5000);
 
       if (error) throw error;
 
