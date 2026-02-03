@@ -197,6 +197,7 @@ export default function InvoiceForm({ initialAppointmentId, initialPatientId }: 
   // Obtener productos de inventario (filtrado por sucursal actual)
   const { data: inventoryItems } = useQuery({
     queryKey: ['inventory-items', currentBranch?.id, isLocalMode],
+    staleTime: 0,
     queryFn: async () => {
       if (!currentBranch?.id) return [];
 

@@ -98,7 +98,7 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
         query = query.or(`first_name.ilike.%${searchTerm}%,last_name.ilike.%${searchTerm}%,code.ilike.%${searchTerm}%`);
       }
 
-      query = query.order('last_name', { ascending: true });
+      query = query.order('last_name', { ascending: true }).limit(5000);
 
       const { data, error } = await query;
       if (error) throw error;

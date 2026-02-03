@@ -77,6 +77,7 @@ export default function InventoryList({ showSecretButton = false }: InventoryLis
 
   const { data: items, isLoading } = useQuery({
     queryKey: ['inventory-items', categoryFilter, supplierFilter, showLowStock, currentBranch?.id, isLocalMode],
+    staleTime: 0,
     queryFn: async () => {
       if (!currentBranch?.id) return [];
 

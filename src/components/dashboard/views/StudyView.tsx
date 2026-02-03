@@ -4,6 +4,11 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { FileImage, Video, Download } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { PdfThumbnail } from '@/components/pdf/PdfThumbnail';
@@ -47,6 +52,7 @@ interface StudyViewProps {
 
 export function StudyView({ encounterId, appointmentId }: StudyViewProps) {
   const [filesWithUrls, setFilesWithUrls] = useState<any[]>([]);
+  const [previewFile, setPreviewFile] = useState<any | null>(null);
   const { connectionMode } = useNetworkStatus();
   const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
 
@@ -293,46 +299,51 @@ export function StudyView({ encounterId, appointmentId }: StudyViewProps) {
                 key={file.id}
                 className="relative border rounded-lg overflow-hidden hover:shadow-md transition-shadow group"
               >
-                {(() => {
-                  const fileType = getFileType(file);
+                <div
+                  className="cursor-pointer"
+                  onClick={() => setPreviewFile(file)}
+                >
+                  {(() => {
+                    const fileType = getFileType(file);
 
-                  if (fileType === 'image') {
-                    return (
-                      <img
-                        src={file.signedUrl || ''}
-                        alt="Estudio"
-                        className="w-full h-32 object-cover"
-                      />
-                    );
-                  }
-
-                  if (fileType === 'video') {
-                    return (
-                      <div className="relative w-full h-32 bg-muted flex items-center justify-center">
-                        <Video className="h-12 w-12 text-muted-foreground" />
-                        <video
+                    if (fileType === 'image') {
+                      return (
+                        <img
                           src={file.signedUrl || ''}
-                          className="absolute inset-0 w-full h-full object-cover opacity-50"
+                          alt="Estudio"
+                          className="w-full h-32 object-cover"
                         />
+                      );
+                    }
+
+                    if (fileType === 'video') {
+                      return (
+                        <div className="relative w-full h-32 bg-muted flex items-center justify-center">
+                          <Video className="h-12 w-12 text-muted-foreground" />
+                          <video
+                            src={file.signedUrl || ''}
+                            className="absolute inset-0 w-full h-full object-cover opacity-50"
+                          />
+                        </div>
+                      );
+                    }
+
+                    if (fileType === 'pdf') {
+                      return (
+                        <PdfThumbnail
+                          src={file.signedUrl || ''}
+                          className="w-full h-32"
+                        />
+                      );
+                    }
+
+                    return (
+                      <div className="w-full h-32 bg-muted flex items-center justify-center">
+                        <FileImage className="h-12 w-12 text-muted-foreground" />
                       </div>
                     );
-                  }
-
-                  if (fileType === 'pdf') {
-                    return (
-                      <PdfThumbnail
-                        src={file.signedUrl || ''}
-                        className="w-full h-32"
-                      />
-                    );
-                  }
-
-                  return (
-                    <div className="w-full h-32 bg-muted flex items-center justify-center">
-                      <FileImage className="h-12 w-12 text-muted-foreground" />
-                    </div>
-                  );
-                })()}
+                  })()}
+                </div>
                 <div className="p-2 bg-card flex items-center justify-between">
                   <span className="text-xs truncate flex-1">
                     {file.file_path.split('/').pop()}
@@ -361,6 +372,74 @@ export function StudyView({ encounterId, appointmentId }: StudyViewProps) {
           </div>
         </div>
       )}
+
+      {/* Modal de Preview */}
+      <Dialog open={!!previewFile} onOpenChange={(open) => !open && setPreviewFile(null)}>
+        <DialogContent className="max-w-4xl max-h-[90vh] p-0 overflow-hidden">
+          <DialogTitle className="sr-only">
+            Vista previa de archivo
+          </DialogTitle>
+          {previewFile && (() => {
+            const fileType = getFileType(previewFile);
+            const fileName = previewFile.file_path?.split('/').pop() || 'Archivo';
+
+            return (
+              <div className="flex flex-col h-full">
+                <div className="flex items-center justify-between p-4 border-b bg-muted/50">
+                  <span className="font-medium truncate">{fileName}</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleDownload(previewFile.signedUrl, fileName)}
+                  >
+                    <Download className="h-4 w-4 mr-2" />
+                    Descargar
+                  </Button>
+                </div>
+                <div className="flex-1 overflow-auto p-4 flex items-center justify-center bg-black/5">
+                  {fileType === 'image' && (
+                    <img
+                      src={previewFile.signedUrl || ''}
+                      alt={fileName}
+                      className="max-w-full max-h-[70vh] object-contain"
+                    />
+                  )}
+                  {fileType === 'video' && (
+                    <video
+                      src={previewFile.signedUrl || ''}
+                      controls
+                      autoPlay
+                      className="max-w-full max-h-[70vh]"
+                    />
+                  )}
+                  {fileType === 'pdf' && (
+                    <iframe
+                      src={previewFile.signedUrl || ''}
+                      className="w-full h-[70vh] border-0"
+                      title={fileName}
+                    />
+                  )}
+                  {fileType === 'other' && (
+                    <div className="text-center p-8">
+                      <FileImage className="h-16 w-16 text-muted-foreground mx-auto mb-4" />
+                      <p className="text-muted-foreground">
+                        Vista previa no disponible para este tipo de archivo.
+                      </p>
+                      <Button
+                        className="mt-4"
+                        onClick={() => handleDownload(previewFile.signedUrl, fileName)}
+                      >
+                        <Download className="h-4 w-4 mr-2" />
+                        Descargar archivo
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
