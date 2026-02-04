@@ -116,8 +116,7 @@ export default function InventoryList({ showSecretButton = false }: InventoryLis
         .select('*, suppliers(name)')
         .eq('active', true)
         .eq('branch_id', currentBranch.id)
-        .order('name')
-        .limit(5000);
+        .order('name');
 
       if (categoryFilter !== 'all') {
         query = query.eq('category', categoryFilter);
@@ -127,7 +126,11 @@ export default function InventoryList({ showSecretButton = false }: InventoryLis
         query = query.eq('supplier_id', supplierFilter);
       }
 
-      const { data, error } = await query;
+      // Apply limit at the end after all filters
+      query = query.limit(5000);
+
+      const { data, error, count } = await query;
+      console.log(`📦 [InventoryList] Query returned ${data?.length} items, categoryFilter: ${categoryFilter}, error: ${error?.message || 'none'}`);
       if (error) throw error;
 
       if (showLowStock) {

@@ -113,7 +113,10 @@ function generatePrescriptionHTML(data: PrintPDFData): string {
     }
     @page {
       size: letter;
-      margin: 0;
+      margin: 1mm 0 0 1mm;
+    }
+    html, body {
+      background: #ffffff !important;
     }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -121,7 +124,7 @@ function generatePrescriptionHTML(data: PrintPDFData): string {
       line-height: 1.2;
       color: #1a1a1a;
       margin: 0;
-      padding: 15px 30px 15px 40px;
+      padding: 0 15px 15px 15px;
     }
     .header {
       text-align: center;
@@ -372,10 +375,11 @@ function generatePrescriptionHTML(data: PrintPDFData): string {
     }
     @media print {
       @page {
-        margin: 0;
+        margin: 1mm 0 0 1mm;
       }
-      body {
-        padding: 15px 30px 15px 40px;
+      html, body {
+        background: #ffffff !important;
+        padding: 0 15px 15px 15px;
         margin: 0;
       }
       * {
@@ -553,7 +557,7 @@ function generateTreatmentHTML(data: PrintPDFData): string {
       line-height: 1.2;
       color: #1a1a1a;
       margin: 0;
-      padding: 15px 30px;
+      padding: 0 15px 15px 15px;
       position: relative;
     }
     .header {
@@ -637,7 +641,7 @@ function generateTreatmentHTML(data: PrintPDFData): string {
       }
       html, body {
         background: #ffffff !important;
-        padding: 15px 30px;
+        padding: 0 15px 15px 15px;
         margin: 0;
       }
       * {
@@ -726,7 +730,7 @@ function generateSurgeriesHTML(data: PrintPDFData): string {
       line-height: 1.2;
       color: #1a1a1a;
       margin: 0;
-      padding: 15px 30px;
+      padding: 0 15px 15px 15px;
     }
     .header {
       text-align: center;
@@ -854,7 +858,7 @@ function generateSurgeriesHTML(data: PrintPDFData): string {
       }
       html, body {
         background: #ffffff !important;
-        padding: 15px 30px;
+        padding: 0 15px 15px 15px;
         margin: 0;
       }
       * {
@@ -965,7 +969,7 @@ function generateStudiesHTML(data: PrintPDFData): string {
       line-height: 1.2;
       color: #1a1a1a;
       margin: 0;
-      padding: 15px 30px;
+      padding: 0 15px 15px 15px;
     }
     .header {
       text-align: center;
@@ -1093,7 +1097,7 @@ function generateStudiesHTML(data: PrintPDFData): string {
       }
       html, body {
         background: #ffffff !important;
-        padding: 15px 30px;
+        padding: 0 15px 15px 15px;
         margin: 0;
       }
       * {
