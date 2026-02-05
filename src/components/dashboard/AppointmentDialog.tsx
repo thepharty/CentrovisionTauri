@@ -480,7 +480,7 @@ export function AppointmentDialog({ open, onClose, appointment, initialDate, ini
       if (showPatientForm) {
         if (patientId) {
           // Actualizar paciente existente
-          if (isTauri()) {
+          if (isLocalMode) {
             await updatePatientTauri(patientId, {
               first_name: data.patient_first_name,
               last_name: data.patient_last_name,
