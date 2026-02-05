@@ -85,7 +85,7 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
       // En modo local (PostgreSQL) o offline, usar Tauri commands
       if ((connectionMode === 'local' || connectionMode === 'offline') && isTauri()) {
         console.log('[PatientsListDialog] Loading from PostgreSQL/SQLite');
-        const results = await getPatientsTauri(searchTerm || undefined, 100);
+        const results = await getPatientsTauri(searchTerm || undefined, 10000);
         return results as Patient[];
       }
 
@@ -98,7 +98,7 @@ export function PatientsListDialog({ open, onClose, onSelectAppointment }: Patie
         query = query.or(`first_name.ilike.%${searchTerm}%,last_name.ilike.%${searchTerm}%,code.ilike.%${searchTerm}%`);
       }
 
-      query = query.order('last_name', { ascending: true }).limit(5000);
+      query = query.order('last_name', { ascending: true }).limit(10000);
 
       const { data, error } = await query;
       if (error) throw error;
