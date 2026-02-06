@@ -253,7 +253,7 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
             onDoubleClick={() => !isResizing && !isDragging && onDoubleClick?.(appointment)}
             style={style}
             className={`
-              relative px-2 py-1.5 mb-0.5 rounded border-l-4 transition-shadow leading-tight group touch-none
+              relative px-2 py-1.5 mb-0.5 rounded border-l-4 transition-shadow leading-tight group touch-none w-full max-w-full
               ${colorClass}
               ${isDragging ? 'opacity-50 z-50 shadow-xl' : 'opacity-100'}
               ${isResizing ? 'cursor-ns-resize' : 'cursor-grab active:cursor-grabbing'}
@@ -341,6 +341,7 @@ export function DraggableAppointmentBlock({ appointment, onClick, onDoubleClick,
 
             {/* Resize handle - Bottom */}
             <div
+              onPointerDown={(e) => e.stopPropagation()}
               onMouseDown={(e) => handleResizeStart(e, 'bottom')}
               className="absolute bottom-0 left-0 right-0 h-2 cursor-ns-resize opacity-0 group-hover:opacity-100 transition-opacity hover:bg-primary/20 z-10"
               onClick={(e) => e.stopPropagation()}

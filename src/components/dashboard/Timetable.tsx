@@ -49,7 +49,7 @@ function DroppableSlot({ id, children, onDoubleClick }: DroppableSlotProps) {
   return (
     <div
       ref={setNodeRef}
-      className={`relative border-r h-full p-1 transition-colors cursor-pointer overflow-hidden flex-1 ${
+      className={`relative border-r h-full p-1 transition-colors cursor-pointer overflow-visible flex-1 min-w-0 ${
         isOver ? 'bg-primary/20' : 'hover:bg-accent/5'
       }`}
       onDoubleClick={onDoubleClick}
