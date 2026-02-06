@@ -977,6 +977,7 @@ export default function Surgery() {
           treatment: medicacion,  // El campo de medicación
         },
         headerImageUrl: currentBranch?.pdf_header_url || undefined,
+        themeColor: currentBranch?.theme_primary_hsl || undefined,
       };
 
       setPreviewTitle('Preview de Medicación Post-Quirúrgica');

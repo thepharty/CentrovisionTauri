@@ -907,6 +907,7 @@ export default function Surgery() {
           treatment: medicacion,
         },
         headerImageUrl: currentBranch?.pdf_header_url || undefined,
+        themeColor: currentBranch?.theme_primary_hsl || undefined,
       };
 
       setPreviewTitle('Preview de Medicación Post-Procedimiento');

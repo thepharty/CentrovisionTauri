@@ -338,6 +338,7 @@ export default function Consultation() {
           notes: notaRefraccion,
         },
         headerImageUrl: currentBranch?.pdf_header_url || undefined,
+        themeColor: currentBranch?.theme_primary_hsl || undefined,
       };
 
       setPreviewTitle('Preview de Receta');
@@ -378,6 +379,7 @@ export default function Consultation() {
           treatment: planTratamiento,
         },
         headerImageUrl: currentBranch?.pdf_header_url || undefined,
+        themeColor: currentBranch?.theme_primary_hsl || undefined,
       };
 
       setPreviewTitle('Preview de Plan de Tratamiento');
@@ -445,6 +447,7 @@ export default function Consultation() {
           surgeries: surgeriesArray,
         },
         headerImageUrl: currentBranch?.pdf_header_url || undefined,
+        themeColor: currentBranch?.theme_primary_hsl || undefined,
       };
 
       setPreviewTitle('Preview de Orden de Cirugía');
@@ -512,6 +515,7 @@ export default function Consultation() {
           studies: studiesArray,
         },
         headerImageUrl: currentBranch?.pdf_header_url || undefined,
+        themeColor: currentBranch?.theme_primary_hsl || undefined,
       };
 
       setPreviewTitle('Preview de Orden de Estudios');

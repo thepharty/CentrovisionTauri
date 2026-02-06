@@ -16,6 +16,7 @@ export interface PrintPDFData {
   date: string;
   content: any;
   headerImageUrl?: string; // URL del encabezado personalizado de la sede
+  themeColor?: string; // HSL string de la sucursal (ej: "221 74% 54%")
 }
 
 // Cash Closure Data Interface
@@ -50,6 +51,36 @@ function getDoctorTitle(gender?: 'M' | 'F'): string {
 // Header image path (encabezado-centrovision.png)
 const HEADER_IMAGE_PATH = "/encabezado-centrovision.png";
 
+// Default accent color (blue) - matches the hardcoded #4F7FFF used historically
+const DEFAULT_ACCENT_COLOR = '#4F7FFF';
+
+// Convert HSL string (e.g. "221 74% 54%") to hex color
+function hslToHex(hslString: string): string {
+  const parts = hslString.trim().split(/\s+/);
+  if (parts.length < 3) return DEFAULT_ACCENT_COLOR;
+  const h = parseFloat(parts[0]);
+  const s = parseFloat(parts[1]) / 100;
+  const l = parseFloat(parts[2]) / 100;
+  if (isNaN(h) || isNaN(s) || isNaN(l)) return DEFAULT_ACCENT_COLOR;
+
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12;
+    const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    return Math.round(255 * color).toString(16).padStart(2, '0');
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+// Default UI theme HSL — if branch has this value, treat it as "no custom color"
+const DEFAULT_THEME_HSL = '221 74% 54%';
+
+// Get accent color hex from theme HSL, defaulting to the original blue
+function getAccentColor(themeColor?: string): string {
+  if (!themeColor || themeColor.trim() === DEFAULT_THEME_HSL) return DEFAULT_ACCENT_COLOR;
+  return hslToHex(themeColor);
+}
+
 /**
  * Generate HTML content for printing based on document type
  */
@@ -69,8 +100,9 @@ export function generatePrintHTML(data: PrintPDFData): string {
 }
 
 function generatePrescriptionHTML(data: PrintPDFData): string {
-  const { patientData, doctorData, date, content, headerImageUrl } = data;
+  const { patientData, doctorData, date, content, headerImageUrl, themeColor } = data;
   const headerSrc = headerImageUrl || HEADER_IMAGE_PATH;
+  const accent = getAccentColor(themeColor);
   const { od, os, material, color, type, dp } = content;
 
   const formatValue = (val: any) => {
@@ -150,7 +182,7 @@ function generatePrescriptionHTML(data: PrintPDFData): string {
     }
     .info-label {
       font-weight: 600;
-      color: #4F7FFF;
+      color: ${accent};
       font-size: 9pt;
       text-transform: uppercase;
       letter-spacing: 0.5px;
@@ -269,8 +301,8 @@ function generatePrescriptionHTML(data: PrintPDFData): string {
       flex-shrink: 0;
     }
     .checkbox.checked {
-      background-color: #4F7FFF;
-      border-color: #4F7FFF;
+      background-color: ${accent};
+      border-color: ${accent};
     }
     .checkbox.checked::after {
       content: '✓';
@@ -533,8 +565,9 @@ function generatePrescriptionHTML(data: PrintPDFData): string {
 }
 
 function generateTreatmentHTML(data: PrintPDFData): string {
-  const { patientData, doctorData, date, content, headerImageUrl } = data;
+  const { patientData, doctorData, date, content, headerImageUrl, themeColor } = data;
   const headerSrc = headerImageUrl || HEADER_IMAGE_PATH;
+  const accent = getAccentColor(themeColor);
   const { diagnosis, treatment } = content;
 
   return `
@@ -584,7 +617,7 @@ function generateTreatmentHTML(data: PrintPDFData): string {
     }
     .info-label {
       font-weight: 600;
-      color: #4F7FFF;
+      color: ${accent};
       font-size: 9pt;
       text-transform: uppercase;
       letter-spacing: 0.5px;
@@ -700,8 +733,9 @@ function generateTreatmentHTML(data: PrintPDFData): string {
 }
 
 function generateSurgeriesHTML(data: PrintPDFData): string {
-  const { patientData, doctorData, date, content, headerImageUrl } = data;
+  const { patientData, doctorData, date, content, headerImageUrl, themeColor } = data;
   const headerSrc = headerImageUrl || HEADER_IMAGE_PATH;
+  const accent = getAccentColor(themeColor);
   const { surgeries } = content;
 
   const eyeMap: { [key: string]: string } = {
@@ -756,7 +790,7 @@ function generateSurgeriesHTML(data: PrintPDFData): string {
     }
     .info-label {
       font-weight: 600;
-      color: #4F7FFF;
+      color: ${accent};
       font-size: 9pt;
       text-transform: uppercase;
       letter-spacing: 0.5px;
@@ -933,8 +967,9 @@ function generateSurgeriesHTML(data: PrintPDFData): string {
 }
 
 function generateStudiesHTML(data: PrintPDFData): string {
-  const { patientData, doctorData, date, content, headerImageUrl } = data;
+  const { patientData, doctorData, date, content, headerImageUrl, themeColor } = data;
   const headerSrc = headerImageUrl || HEADER_IMAGE_PATH;
+  const accent = getAccentColor(themeColor);
   const { studies } = content;
 
   const eyeMap: { [key: string]: string } = {
@@ -995,7 +1030,7 @@ function generateStudiesHTML(data: PrintPDFData): string {
     }
     .info-label {
       font-weight: 600;
-      color: #4F7FFF;
+      color: ${accent};
       font-size: 9pt;
       text-transform: uppercase;
       letter-spacing: 0.5px;
