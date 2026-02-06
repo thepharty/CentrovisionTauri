@@ -23,6 +23,7 @@ import { PrintPreviewDialog } from '@/components/dashboard/PrintPreviewDialog';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import { useBranch } from '@/hooks/useBranch';
 import { invoke } from '@tauri-apps/api/core';
+import { useAuth } from '@/hooks/useAuth';
 
 // Check if running in Tauri
 function isTauri(): boolean {
@@ -61,6 +62,7 @@ interface ProfileLocal {
   full_name: string | null;
   specialty: string | null;
   gender?: string;
+  professional_title?: string;
 }
 
 interface AppointmentLocal {
@@ -112,6 +114,7 @@ export default function Surgery() {
   const { connectionMode } = useNetworkStatus();
   const isLocalMode = (connectionMode === 'local' || connectionMode === 'offline') && isTauri();
   const { currentBranch } = useBranch();
+  const { user } = useAuth();
 
   // Estados principales - simplificados según estructura de DB
   const [tipoProcedimiento, setTipoProcedimiento] = React.useState('');
@@ -190,6 +193,31 @@ export default function Surgery() {
       return data as Encounter;
     },
     enabled: !!encounterId,
+  });
+
+  // Obtener el perfil del doctor actual de la sesión
+  const { data: currentDoctor } = useQuery({
+    queryKey: ['current-doctor-profile', user?.id, connectionMode],
+    queryFn: async () => {
+      if (!user?.id) return null;
+
+      if (isLocalMode) {
+        const profile = await invoke<ProfileLocal | null>('get_profile_by_user_id', {
+          userId: user.id,
+        });
+        return profile ? { full_name: profile.full_name, specialty: profile.specialty, gender: profile.gender || null, professional_title: profile.professional_title || null } : null;
+      }
+
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('full_name, specialty, gender, professional_title')
+        .eq('user_id', user.id)
+        .single();
+
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!user?.id,
   });
 
   const patient = encounter?.patient;
@@ -592,7 +620,7 @@ export default function Surgery() {
         if (data.doctor_id) {
           const { data: doctorData } = await supabase
             .from('profiles')
-            .select('full_name, specialty')
+            .select('full_name, specialty, gender, professional_title')
             .eq('user_id', data.doctor_id)
             .single();
           doctor = doctorData;
@@ -894,9 +922,10 @@ export default function Surgery() {
           code: patient.code || '',
         },
         doctorData: {
-          name: encounter.doctor?.full_name || 'Doctor',
-          specialty: encounter.doctor?.specialty || 'Oftalmología',
-          gender: ((encounter.doctor as any)?.gender || 'M') as 'M' | 'F',
+          name: currentDoctor?.full_name || encounter.doctor?.full_name || 'Doctor',
+          specialty: currentDoctor?.specialty || encounter.doctor?.specialty || 'Oftalmología',
+          gender: ((currentDoctor as any)?.gender || (encounter.doctor as any)?.gender || 'M') as 'M' | 'F',
+          professionalTitle: (currentDoctor as any)?.professional_title || (encounter.doctor as any)?.professional_title || undefined,
         },
         date: new Date().toLocaleDateString('es-ES', {
           year: 'numeric',

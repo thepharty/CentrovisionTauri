@@ -102,6 +102,7 @@ export default function Admin() {
   const [editingUser, setEditingUser] = useState<UserWithProfile | null>(null);
   const [editSpecialty, setEditSpecialty] = useState('');
   const [editGender, setEditGender] = useState<'M' | 'F'>('M');
+  const [editProfessionalTitle, setEditProfessionalTitle] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   
@@ -452,7 +453,8 @@ export default function Admin() {
   const handleEditUser = (user: UserWithProfile) => {
     setEditingUser(user);
     setEditSpecialty(user.specialty || '');
-    setEditGender(((user as any).gender || 'M') as 'M' | 'F');
+    setEditGender((user.gender || 'M') as 'M' | 'F');
+    setEditProfessionalTitle((user as any).professional_title || '');
     setNewPassword('');
   };
 
@@ -563,14 +565,16 @@ export default function Admin() {
         await invoke('update_profile_doctor_info', {
           userId: editingUser.user_id,
           specialty: isDoctor ? editSpecialty : null,
-          gender: isDoctor ? editGender : null
+          gender: isDoctor ? editGender : null,
+          professionalTitle: isDoctor ? (editProfessionalTitle.trim() || null) : null
         });
       } else {
         const { error } = await supabase
           .from('profiles')
           .update({
             specialty: isDoctor ? editSpecialty : null,
-            gender: isDoctor ? editGender : null
+            gender: isDoctor ? editGender : null,
+            professional_title: isDoctor ? (editProfessionalTitle.trim() || null) : null
           })
           .eq('user_id', editingUser.user_id);
         if (error) throw error;
@@ -1300,6 +1304,18 @@ export default function Admin() {
                       onChange={(e) => setEditSpecialty(e.target.value)}
                       placeholder="Ej: Oftalmología, Retina, Glaucoma"
                     />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-professional-title">Título Profesional</Label>
+                    <Input
+                      id="edit-professional-title"
+                      value={editProfessionalTitle}
+                      onChange={(e) => setEditProfessionalTitle(e.target.value)}
+                      placeholder="Dejar vacío para usar Dr./Dra. automático"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Ej: LIC., OPTOM. Si está vacío se usa Dr./Dra. según género
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="edit-gender">Género</Label>

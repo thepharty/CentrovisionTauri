@@ -509,13 +509,13 @@ export default function Reconsulta() {
         const profile = await invoke<ProfileLocal | null>('get_profile_by_user_id', {
           userId: user.id,
         });
-        return profile ? { full_name: profile.full_name, specialty: profile.specialty, gender: null } : null;
+        return profile ? { full_name: profile.full_name, specialty: profile.specialty, gender: profile.gender || null, professional_title: profile.professional_title || null } : null;
       }
 
       // Modo Supabase
       const { data, error } = await supabase
         .from('profiles')
-        .select('full_name, specialty, gender')
+        .select('full_name, specialty, gender, professional_title')
         .eq('user_id', user.id)
         .single();
 
@@ -1271,6 +1271,7 @@ export default function Reconsulta() {
           name: currentDoctor?.full_name || encounter.doctor?.full_name || 'Doctor',
           specialty: currentDoctor?.specialty || encounter.doctor?.specialty || 'Oftalmología',
           gender: ((currentDoctor as any)?.gender || (encounter.doctor as any)?.gender || 'M') as 'M' | 'F',
+          professionalTitle: (currentDoctor as any)?.professional_title || (encounter.doctor as any)?.professional_title || undefined,
         },
         date: new Date().toLocaleDateString('es-ES', {
           year: 'numeric',
@@ -1328,6 +1329,7 @@ export default function Reconsulta() {
           name: currentDoctor?.full_name || encounter.doctor?.full_name || 'Doctor',
           specialty: currentDoctor?.specialty || encounter.doctor?.specialty || 'Oftalmología',
           gender: ((currentDoctor as any)?.gender || (encounter.doctor as any)?.gender || 'M') as 'M' | 'F',
+          professionalTitle: (currentDoctor as any)?.professional_title || (encounter.doctor as any)?.professional_title || undefined,
         },
         date: new Date().toLocaleDateString('es-ES', {
           year: 'numeric',
@@ -1396,6 +1398,7 @@ export default function Reconsulta() {
           name: currentDoctor?.full_name || encounter.doctor?.full_name || 'Doctor',
           specialty: currentDoctor?.specialty || encounter.doctor?.specialty || 'Oftalmología',
           gender: ((currentDoctor as any)?.gender || (encounter.doctor as any)?.gender || 'M') as 'M' | 'F',
+          professionalTitle: (currentDoctor as any)?.professional_title || (encounter.doctor as any)?.professional_title || undefined,
         },
         date: new Date().toLocaleDateString('es-ES', {
           year: 'numeric',
@@ -1464,6 +1467,7 @@ export default function Reconsulta() {
           name: currentDoctor?.full_name || encounter.doctor?.full_name || 'Doctor',
           specialty: currentDoctor?.specialty || encounter.doctor?.specialty || 'Oftalmología',
           gender: ((currentDoctor as any)?.gender || (encounter.doctor as any)?.gender || 'M') as 'M' | 'F',
+          professionalTitle: (currentDoctor as any)?.professional_title || (encounter.doctor as any)?.professional_title || undefined,
         },
         date: new Date().toLocaleDateString('es-ES', {
           year: 'numeric',

@@ -519,7 +519,7 @@ impl PostgresPool {
 
         let rows = client
             .query(
-                "SELECT p.id, p.user_id, p.full_name, p.email, p.specialty, p.is_visible_in_dashboard
+                "SELECT p.id, p.user_id, p.full_name, p.email, p.specialty, p.gender, p.professional_title, p.is_visible_in_dashboard
                  FROM profiles p
                  INNER JOIN user_roles ur ON ur.user_id = p.user_id
                  WHERE ur.role = 'doctor' AND p.is_visible_in_dashboard = true",
@@ -536,7 +536,9 @@ impl PostgresPool {
                 full_name: row.get(2),
                 email: row.get(3),
                 specialty: row.get(4),
-                is_visible_in_dashboard: row.get(5),
+                gender: row.get(5),
+                professional_title: row.get(6),
+                is_visible_in_dashboard: row.get(7),
             })
             .collect();
 
@@ -550,7 +552,7 @@ impl PostgresPool {
 
         let row = client
             .query_opt(
-                "SELECT id, user_id, full_name, email, specialty, is_visible_in_dashboard
+                "SELECT id, user_id, full_name, email, specialty, gender, professional_title, is_visible_in_dashboard
                  FROM profiles
                  WHERE user_id = $1",
                 &[&user_uuid],
@@ -564,7 +566,9 @@ impl PostgresPool {
             full_name: r.get(2),
             email: r.get(3),
             specialty: r.get(4),
-            is_visible_in_dashboard: r.get(5),
+            gender: r.get(5),
+            professional_title: r.get(6),
+            is_visible_in_dashboard: r.get(7),
         }))
     }
 
@@ -613,7 +617,7 @@ impl PostgresPool {
         // Get profiles for all users - build query with placeholders
         let placeholders: Vec<String> = (1..=user_ids.len()).map(|i| format!("${}", i)).collect();
         let query = format!(
-            "SELECT user_id, full_name, email, specialty, is_visible_in_dashboard FROM profiles WHERE user_id IN ({})",
+            "SELECT user_id, full_name, email, specialty, is_visible_in_dashboard, gender, professional_title FROM profiles WHERE user_id IN ({})",
             placeholders.join(", ")
         );
 
@@ -629,14 +633,16 @@ impl PostgresPool {
             .map_err(|e| e.to_string())?;
 
         // Build map of profiles
-        let mut profiles_map: std::collections::HashMap<String, (String, String, Option<String>, bool)> = std::collections::HashMap::new();
+        let mut profiles_map: std::collections::HashMap<String, (String, String, Option<String>, bool, Option<String>, Option<String>)> = std::collections::HashMap::new();
         for row in profiles_rows {
             let user_id: uuid::Uuid = row.get(0);
             let full_name: String = row.get(1);
             let email: Option<String> = row.get(2);
             let specialty: Option<String> = row.get(3);
             let is_visible: bool = row.get::<_, Option<bool>>(4).unwrap_or(true);
-            profiles_map.insert(user_id.to_string(), (full_name, email.unwrap_or_else(|| "N/A".to_string()), specialty, is_visible));
+            let gender: Option<String> = row.get(5);
+            let professional_title: Option<String> = row.get(6);
+            profiles_map.insert(user_id.to_string(), (full_name, email.unwrap_or_else(|| "N/A".to_string()), specialty, is_visible, gender, professional_title));
         }
 
         // Group roles by user
@@ -662,6 +668,8 @@ impl PostgresPool {
                     full_name: profile.map(|p| p.0.clone()).unwrap_or_else(|| "N/A".to_string()),
                     roles: vec![role],
                     specialty: profile.and_then(|p| p.2.clone()),
+                    gender: profile.and_then(|p| p.4.clone()),
+                    professional_title: profile.and_then(|p| p.5.clone()),
                     created_at: created_at.to_rfc3339(),
                     is_visible_in_dashboard: profile.map(|p| p.3).unwrap_or(true),
                 });
@@ -734,14 +742,14 @@ impl PostgresPool {
     }
 
     /// Update user specialty and gender (for doctors)
-    pub async fn update_profile_doctor_info(&self, user_id: &str, specialty: Option<String>, gender: Option<String>) -> Result<(), String> {
+    pub async fn update_profile_doctor_info(&self, user_id: &str, specialty: Option<String>, gender: Option<String>, professional_title: Option<String>) -> Result<(), String> {
         let client = self.pool.get().await.map_err(|e| e.to_string())?;
         let user_uuid = uuid::Uuid::parse_str(user_id).map_err(|e| e.to_string())?;
 
         client
             .execute(
-                "UPDATE profiles SET specialty = $2, gender = $3 WHERE user_id = $1",
-                &[&user_uuid, &specialty, &gender],
+                "UPDATE profiles SET specialty = $2, gender = $3, professional_title = $4 WHERE user_id = $1",
+                &[&user_uuid, &specialty, &gender, &professional_title],
             )
             .await
             .map_err(|e| e.to_string())?;

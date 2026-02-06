@@ -68,6 +68,8 @@ pub struct Profile {
     pub full_name: String,
     pub email: Option<String>,
     pub specialty: Option<String>,
+    pub gender: Option<String>,
+    pub professional_title: Option<String>,
     pub is_visible_in_dashboard: bool,
 }
 
@@ -86,6 +88,8 @@ pub struct UserWithProfile {
     pub full_name: String,
     pub roles: Vec<String>,
     pub specialty: Option<String>,
+    pub gender: Option<String>,
+    pub professional_title: Option<String>,
     pub created_at: String,
     pub is_visible_in_dashboard: bool,
 }
@@ -611,7 +615,7 @@ pub async fn get_doctors(
 
     let mut stmt = conn
         .prepare(
-            "SELECT p.id, p.user_id, p.full_name, p.email, p.specialty, p.is_visible_in_dashboard
+            "SELECT p.id, p.user_id, p.full_name, p.email, p.specialty, p.gender, p.professional_title, p.is_visible_in_dashboard
              FROM profiles p
              INNER JOIN user_roles ur ON ur.user_id = p.user_id
              WHERE ur.role = 'doctor' AND p.is_visible_in_dashboard = 1",
@@ -626,7 +630,9 @@ pub async fn get_doctors(
                 full_name: row.get(2)?,
                 email: row.get(3)?,
                 specialty: row.get(4)?,
-                is_visible_in_dashboard: row.get::<_, i32>(5)? == 1,
+                gender: row.get(5)?,
+                professional_title: row.get(6)?,
+                is_visible_in_dashboard: row.get::<_, i32>(7)? == 1,
             })
         })
         .map_err(|e| e.to_string())?
@@ -654,7 +660,7 @@ pub async fn get_profile_by_user_id(
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, user_id, full_name, email, specialty, is_visible_in_dashboard
+            "SELECT id, user_id, full_name, email, specialty, gender, professional_title, is_visible_in_dashboard
              FROM profiles
              WHERE user_id = ?1",
         )
@@ -668,7 +674,9 @@ pub async fn get_profile_by_user_id(
                 full_name: row.get(2)?,
                 email: row.get(3)?,
                 specialty: row.get(4)?,
-                is_visible_in_dashboard: row.get::<_, i32>(5)? == 1,
+                gender: row.get(5)?,
+                professional_title: row.get(6)?,
+                is_visible_in_dashboard: row.get::<_, i32>(7)? == 1,
             })
         })
         .ok();
@@ -764,10 +772,11 @@ pub async fn update_profile_doctor_info(
     user_id: String,
     specialty: Option<String>,
     gender: Option<String>,
+    professional_title: Option<String>,
 ) -> Result<(), String> {
     if let Some(pool) = app_state.connection_manager.get_postgres_pool().await {
         log::info!("update_profile_doctor_info: Using local PostgreSQL");
-        return pool.update_profile_doctor_info(&user_id, specialty, gender).await;
+        return pool.update_profile_doctor_info(&user_id, specialty, gender, professional_title).await;
     }
     Err("Offline mode not supported for this operation".to_string())
 }

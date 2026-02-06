@@ -53,6 +53,8 @@ export interface Profile {
   user_id: string;
   full_name: string;
   specialty?: string;
+  gender?: string;
+  professional_title?: string;
   created_at: string;
   updated_at: string;
 }

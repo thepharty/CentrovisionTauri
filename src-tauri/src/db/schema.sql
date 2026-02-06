@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS profiles (
     email TEXT,
     specialty TEXT,
     gender TEXT,
+    professional_title TEXT,
     is_visible_in_dashboard INTEGER NOT NULL DEFAULT 1,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now')),

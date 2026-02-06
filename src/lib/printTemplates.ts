@@ -12,6 +12,7 @@ export interface PrintPDFData {
     name: string;
     specialty?: string;
     gender?: 'M' | 'F';
+    professionalTitle?: string;
   };
   date: string;
   content: any;
@@ -44,7 +45,8 @@ export interface CashClosureData {
 }
 
 // Helper function to get doctor title based on gender
-function getDoctorTitle(gender?: 'M' | 'F'): string {
+function getDoctorTitle(gender?: 'M' | 'F', professionalTitle?: string): string {
+  if (professionalTitle) return professionalTitle;
   return gender === 'F' ? 'DRA.' : 'DR.';
 }
 
@@ -553,7 +555,7 @@ function generatePrescriptionHTML(data: PrintPDFData): string {
     <div class="footer">
       <div class="signature-line">
         <div class="doctor-info">
-          <div style="font-weight: 600; font-size: 11pt; margin-bottom: 3px; text-transform: capitalize;">${getDoctorTitle(doctorData.gender)} ${doctorData.name}</div>
+          <div style="font-weight: 600; font-size: 11pt; margin-bottom: 3px; text-transform: capitalize;">${getDoctorTitle(doctorData.gender, doctorData.professionalTitle)} ${doctorData.name}</div>
           ${doctorData.specialty ? `<div>${doctorData.specialty}</div>` : ''}
         </div>
       </div>
@@ -722,7 +724,7 @@ function generateTreatmentHTML(data: PrintPDFData): string {
   <div class="doctor-signature-fixed">
     <div class="signature-line">
       <div class="doctor-info">
-        <div style="font-weight: 600; font-size: 11pt; margin-bottom: 3px; text-transform: capitalize;">${getDoctorTitle(doctorData.gender)} ${doctorData.name}</div>
+        <div style="font-weight: 600; font-size: 11pt; margin-bottom: 3px; text-transform: capitalize;">${getDoctorTitle(doctorData.gender, doctorData.professionalTitle)} ${doctorData.name}</div>
         ${doctorData.specialty ? `<div>${doctorData.specialty}</div>` : ''}
       </div>
     </div>
@@ -955,7 +957,7 @@ function generateSurgeriesHTML(data: PrintPDFData): string {
     <div class="doctor-signature-fixed">
       <div class="signature-line">
         <div class="doctor-info">
-          <div style="font-weight: 600; font-size: 11pt; margin-bottom: 3px; text-transform: capitalize;">${getDoctorTitle(doctorData.gender)} ${doctorData.name}</div>
+          <div style="font-weight: 600; font-size: 11pt; margin-bottom: 3px; text-transform: capitalize;">${getDoctorTitle(doctorData.gender, doctorData.professionalTitle)} ${doctorData.name}</div>
           ${doctorData.specialty ? `<div>${doctorData.specialty}</div>` : ''}
         </div>
       </div>
@@ -1211,7 +1213,7 @@ function generateStudiesHTML(data: PrintPDFData): string {
     <div class="doctor-signature-fixed">
       <div class="signature-line">
         <div class="doctor-info">
-          <div style="font-weight: 600; font-size: 11pt; margin-bottom: 3px; text-transform: capitalize;">${getDoctorTitle(doctorData.gender)} ${doctorData.name}</div>
+          <div style="font-weight: 600; font-size: 11pt; margin-bottom: 3px; text-transform: capitalize;">${getDoctorTitle(doctorData.gender, doctorData.professionalTitle)} ${doctorData.name}</div>
           ${doctorData.specialty ? `<div>${doctorData.specialty}</div>` : ''}
         </div>
       </div>
